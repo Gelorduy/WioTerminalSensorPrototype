@@ -4,5 +4,6 @@
 #include <ArduinoJson.h>
 
 void writeDataLogFile(DynamicJsonDocument* jsonDoc, bool unSent);
+bool resendUnsentLogs(size_t maxEntries = 10);
 
 #endif

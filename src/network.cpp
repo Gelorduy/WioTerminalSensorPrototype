@@ -17,6 +17,12 @@
 #define BEARERTOKEN API_BEARER_TOKEN
 
 static const int kNtpPacketSize = 48;
+static const unsigned long kWifiInitialBackoffMs = 1000;
+static const unsigned long kWifiMaxBackoffMs = 60000;
+static const unsigned long kWifiConnectWindowMs = 10000;
+
+static unsigned long sLastWifiAttemptMs = 0;
+static unsigned long sWifiBackoffMs = kWifiInitialBackoffMs;
 
 unsigned long sendNTPpacket(const char* address) {
     for (int i = 0; i < kNtpPacketSize; ++i) {
@@ -151,6 +157,60 @@ void connectWiFi() {
             Serial.println(WiFi.localIP());
         }
     }
+}
+
+bool ensureWiFiConnected() {
+    if (WiFi.status() == WL_CONNECTED) {
+        sWifiBackoffMs = kWifiInitialBackoffMs;
+        return true;
+    }
+
+    unsigned long nowMs = millis();
+    if (nowMs - sLastWifiAttemptMs < sWifiBackoffMs) {
+        return false;
+    }
+    sLastWifiAttemptMs = nowMs;
+
+    if (wifissid != 1 && wifissid != 2 && wifissid != 3) {
+        DynamicJsonDocument scanData(4096);
+        scanNetworks(&scanData);
+    }
+
+    const char* issid = nullptr;
+    const char* ipwd = nullptr;
+    if (wifissid == 1 || wifissid == 3) {
+        issid = ssid;
+        ipwd = password;
+    } else if (wifissid == 2) {
+        issid = alternatessid;
+        ipwd = alternatepassword;
+    } else {
+        sWifiBackoffMs = min(kWifiMaxBackoffMs, sWifiBackoffMs * 2);
+        return false;
+    }
+
+    Serial.print("WiFi reconnect attempt with backoff(ms): ");
+    Serial.println(String(sWifiBackoffMs));
+    WiFi.begin(issid, ipwd);
+
+    unsigned long windowStart = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - windowStart) < kWifiConnectWindowMs) {
+        delay(250);
+        Serial.print(".");
+    }
+    Serial.println();
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi reconnected.");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+        sWifiBackoffMs = kWifiInitialBackoffMs;
+        return true;
+    }
+
+    WiFi.disconnect();
+    sWifiBackoffMs = min(kWifiMaxBackoffMs, sWifiBackoffMs * 2);
+    return false;
 }
 
 int sendPostMessage(DynamicJsonDocument* document) {

@@ -423,6 +423,9 @@ void setup() {
       Serial.print("Adjusted RTC (boot) time is: ");
       Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
 
+            // Boot-time recovery: drain queued unsent telemetry when possible.
+            resendUnsentLogs(20);
+
     }
 
     // // Usr button Setup
@@ -553,12 +556,12 @@ void loop() {
 
         // Send results to server
         if(WiFi.status() == WL_CONNECTED){
-          // sendoldReadings First
-          // TODO: Send old readings before sending current data
-            // int res = sendPostMessage(&envData);
-            // if (res == 1){
-            //     writeDataLogFile(&envData, true);
-            // }
+                    // Periodically retry unsent backlog before sending the latest reading.
+                    resendUnsentLogs(5);
+                    int res = sendPostMessage(&envData);
+                    if (res == 1){
+                            writeDataLogFile(&envData, true);
+                    }
 
             //Condition for low soil moisture
             // if(sensorValue < 50){
@@ -574,6 +577,7 @@ void loop() {
           // WiFi.disconnect(); 
           // Serial.println("WiFi disconnected waiting " + String(seconds) + " seconds before resend.");
         } else {
+                    ensureWiFiConnected();
           // TODO: Save results to send later when connection is available
           writeDataLogFile(&envData, true);
           Serial.println("WiFi not connected saving results to send later.");
