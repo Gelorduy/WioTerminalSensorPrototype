@@ -1,0 +1,43 @@
+#include "display.h"
+
+#include <Arduino.h>
+#include "Free_Fonts.h"
+#include "app_state.h"
+
+#define TFT_PROCOMSABLUE 0x2A51
+
+void sendToScreen() {
+    tft.fillScreen(TFT_BLACK);
+    tft.fillRect(0, 0, 320, 55, TFT_PROCOMSABLUE);
+    tft.setTextColor(TFT_WHITE);
+    tft.setFreeFont(FSSO12);
+    tft.drawString("Termocheck", 50, 10);
+    tft.setFreeFont(FSSO9);
+    String location = "GGG-" + String(placeCharacteristic->getValue().c_str());
+    tft.drawString(location, 50, 35);
+    if (tnow == "") {
+        now = rtc.now();
+    }
+    char* fmt = new char[12];
+    strcpy(fmt, "MMM DD hh:mm");
+    tnow = now.toString(fmt);
+    tft.drawString(tnow, 210, 10);
+    String sLight = "Luz: " + String(light) + " %";
+    tft.drawString(sLight, 230, 35);
+
+    tft.drawFastVLine(160, 55, 95, TFT_PROCOMSABLUE);
+    tft.drawFastHLine(0, 150, 320, TFT_PROCOMSABLUE);
+
+    tft.setFreeFont(FSSO12);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString("Temp C", 35, 63);
+    tft.setFreeFont(FSSO24);
+    tft.drawFloat(aTemperature, 2, 20, 100);
+
+    tft.setFreeFont(FSSO12);
+    tft.drawString("Hum Rel %", 180, 63);
+    tft.setFreeFont(FSSO24);
+    tft.drawFloat(aHumidity, 2, 180, 100);
+
+    delay(1500);
+}
