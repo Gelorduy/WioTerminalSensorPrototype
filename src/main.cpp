@@ -584,9 +584,7 @@ void loop() {
         }
         writeDataLogFile(&envData, false);
 
-        std::string rxValue = placeCharacteristic->getValue();
-        String test = String(rxValue.c_str());
-        Serial.println(test);
+        Serial.println(String(placeCharacteristic->getValue().c_str()));
 
         uint8_t* descValue = pDescriptor->getValue();
         if (descValue != nullptr) {

@@ -18,8 +18,7 @@ void sendToScreen() {
     if (tnow == "") {
         now = rtc.now();
     }
-    char* fmt = new char[12];
-    strcpy(fmt, "MMM DD hh:mm");
+    char fmt[] = "MMM DD hh:mm";
     tnow = now.toString(fmt);
     tft.drawString(tnow, 210, 10);
     String sLight = "Luz: " + String(light) + " %";
@@ -39,5 +38,4 @@ void sendToScreen() {
     tft.setFreeFont(FSSO24);
     tft.drawFloat(aHumidity, 2, 180, 100);
 
-    delay(1500);
 }
