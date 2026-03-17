@@ -47,6 +47,10 @@ Recommended pattern:
 3. Include it from `main.cpp`.
 4. Add `include/secrets_template.h` with placeholder values for onboarding.
 
+Current implementation:
+- `main.cpp` loads `secrets_local.h` when present and falls back to `secrets_template.h`.
+- `include/secrets_local.h` is in `.gitignore`.
+
 ## 4. Reliability Checklist
 Before each firmware release:
 1. Verify cold boot with and without SD card inserted.

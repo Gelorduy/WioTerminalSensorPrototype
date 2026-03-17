@@ -9,6 +9,11 @@
 #else
 #include "../.pio/libdeps/seeed_wio_terminal/Grove - I2C High Accuracy Temp_Humi Sensor SHT35/Seeed_SHT35.h"
 #endif
+#if __has_include("secrets_local.h")
+#include "secrets_local.h"
+#else
+#include "secrets_template.h"
+#endif
 #include "SensirionI2cSht4x.h"
 #include <Wire.h>
 #include "time.h"
@@ -52,19 +57,19 @@ int bscreenOn = false;
 
 // Wireless Definitions
 
-#define HOSTNAME "GonTempEsp32c3"
-#define SERVERURL "https://thermohouse.gonmobile.com/api/reading" // https://thermolog.gonmobile.com/api/reading
+#define HOSTNAME WIFI_HOSTNAME
+#define SERVERURL API_SERVER_URL // https://thermolog.gonmobile.com/api/reading
 // #define ALTERNATESVR "https://ace.rea.local/api/reading"
 // #define SVRPATH "/api/reading"
 #define K 27.55 // Constant defined for meters and MegaHertz
-#define BEARERTOKEN "SPSdpIISQrpWYpwFritHfShA41dyv9R4x1IUzcYUda79c1b6"  // Temporary use as a Token
+#define BEARERTOKEN API_BEARER_TOKEN
 String strBaseMac = "";  // WiFi MacAddress
-const char* ssid     = "InvitadosFGG"; // "FGranGonz5G";
-const char* password = "Invitados.FGG2022"; // "Aqu1l3sBa3sa157";
-const char* alternatessid     = "EmpleadosProcomsa"; //EmpleadosProcomsa
-const char* alternatepassword = "Pr0c0msaEmpl3ados"; //Pr0c0msaEmpl3ados
-const char* mobilessid     = "MovilProcomsa"; //EmpleadosProcomsa
-const char* mobilepassword = "Pr0c0msa.M0b1l3"; //Pr0c0msaEmpl3ados
+const char* ssid     = WIFI_SSID_PRIMARY; // "FGranGonz5G";
+const char* password = WIFI_PASSWORD_PRIMARY; // "Aqu1l3sBa3sa157";
+const char* alternatessid     = WIFI_SSID_ALTERNATE; //EmpleadosProcomsa
+const char* alternatepassword = WIFI_PASSWORD_ALTERNATE; //Pr0c0msaEmpl3ados
+const char* mobilessid     = WIFI_SSID_MOBILE; //EmpleadosProcomsa
+const char* mobilepassword = WIFI_PASSWORD_MOBILE; //Pr0c0msaEmpl3ados
 int wifissid = 0; // 0=Unknown, 1=Primary, 2=Alternate, 3=Both, 4=NotFound
 int channels[11] = { 2412, 2417, 2422, 2427, 2432, 2437, 2442, 2447, 2452, 2457, 2462 };
 float distance; // In meters
