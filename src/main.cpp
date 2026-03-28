@@ -348,23 +348,10 @@ void setup() {
 
     // Sensirion Setup
     Wire.begin();
-    sensor.begin(Wire, SHT40_I2C_ADDR_44);
-    sensor.softReset();
-    delay(10);
-    error = sensor.serialNumber(serialNumber);
-    
-    if (error != NO_ERROR) {
-        Serial.print("Error trying to execute serialNumber(): ");
-        errorToString(error, errorMessage, sizeof errorMessage);
-        Serial.println(errorMessage);
-        logStartupStatus("SHT40 init error");
-    } else {
-        termosensor = true;
-        logStartupStatus("SHT40 ready");
-    }
-    Serial.print("serialNumberSHT40: ");
-    Serial.print(serialNumber);
-    Serial.println();
+
+    // SHT40 temporarily disabled due startup failures under investigation.
+    termosensor = false;
+    logStartupStatus("SHT40 disabled (temporary)");
 
     // SHT35 Sensor HT Sensor
     if (sensor35.init() == NO_ERROR){
@@ -372,8 +359,11 @@ void setup() {
 
         Serial.println("Sensor Read Result: " + String(errorMessage));
 
-        if (error != NO_ERROR){
+        if (error == NO_ERROR){
             termosensor35 = true;
+            logStartupStatus("SHT35 read ok");
+        } else {
+            logStartupStatus("SHT35 read error");
         }
         Serial.println("SHT35 sensor initialization successful :" + termosensor35);
         logStartupStatus("SHT35 ready");
