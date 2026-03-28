@@ -92,54 +92,19 @@ const unsigned long screenInterval = 10000; // interval to keep screen display 1
 const unsigned long seconds = interval/1000;
 
 
-// Sensirion Definitions
+    // WiFi setup is deferred to loop so startup never blocks UI rendering.
+    logStartupStatus("WiFi init deferred to loop");
 
-// macro definitions
-// make sure that we use the proper definition of NO_ERROR
-#ifdef NO_ERROR
-#undef NO_ERROR
-#endif
-#define NO_ERROR 0
-
-SensirionI2cSht4x sensor;
-SHT35 sensor35(PIN_WIRE_SCL, DEFAULT_IIC_ADDR);
-
-char errorMessage[64];
-int16_t error;
-uint32_t serialNumber;
-float aTemperature = 0.00;
-float aHumidity = 0.00;
-bool termosensor = false;
-bool termosensor35 = false;
-
-// Light Sensor
-  int light;
-
-// NTP server to request epoch time
-const char* ntpServer = "mx.pool.ntp.org"; //mx.pool.ntp.org
-const char* ntpServer1 = "pool.ntp.org";
-const char* ntpServer2 = "time.windows.com";
-const char* ntpServer3 = "time.cloudflare.com";
-
-millisDelay updateDelay; // the update delay object. used for ntp periodic update.
-
-unsigned int localPort = 2390;      // local port to listen for UDP packets
-char timeServer[] = "mx.pool.ntp.org"; // extenral NTP server e.g. time.nist.gov
-const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
-DateTime now; // declare a time object
-WiFiUDP udp; //The udp library class
-unsigned long devicetime; // localtime
-RTC_SAMD51 rtc;
-String tnow = "";
-
-// Variable to save current epoch time
-// unsigned long epochTime; 
-// struct tm tCurrInfo;
-bool timeSet = false;
-
-// Variable for LogFile
-File LogFile;
+    // RTC setup should not block startup screen rendering.
+    if (!rtc.begin()) {
+        Serial.println("Couldn't find RTC");
+        logStartupStatus("RTC not found (continue)");
+    } else {
+        now = rtc.now();
+        Serial.print("RTC time is: ");
+        Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
+        logStartupStatus("RTC available");
+    }
 File screenLogo;
 File iconLogo;
 bool sdcard = false;
@@ -594,7 +559,14 @@ void loop() {
           // WiFi.disconnect(); 
           // Serial.println("WiFi disconnected waiting " + String(seconds) + " seconds before resend.");
         } else {
-                    ensureWiFiConnected();
+          if (ensureWiFiConnected()) {
+              strBaseMac = WiFi.macAddress();
+              devicetime = getNTPtime();
+              if (devicetime != 0) {
+                  rtc.adjust(DateTime(devicetime));
+              }
+              resendUnsentLogs(20);
+          }
           // TODO: Save results to send later when connection is available
           writeDataLogFile(&envData, true);
           Serial.println("WiFi not connected saving results to send later.");
