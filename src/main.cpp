@@ -92,19 +92,54 @@ const unsigned long screenInterval = 10000; // interval to keep screen display 1
 const unsigned long seconds = interval/1000;
 
 
-    // WiFi setup is deferred to loop so startup never blocks UI rendering.
-    logStartupStatus("WiFi init deferred to loop");
+// Sensirion Definitions
 
-    // RTC setup should not block startup screen rendering.
-    if (!rtc.begin()) {
-        Serial.println("Couldn't find RTC");
-        logStartupStatus("RTC not found (continue)");
-    } else {
-        now = rtc.now();
-        Serial.print("RTC time is: ");
-        Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
-        logStartupStatus("RTC available");
-    }
+// macro definitions
+// make sure that we use the proper definition of NO_ERROR
+#ifdef NO_ERROR
+#undef NO_ERROR
+#endif
+#define NO_ERROR 0
+
+SensirionI2cSht4x sensor;
+SHT35 sensor35(PIN_WIRE_SCL, DEFAULT_IIC_ADDR);
+
+char errorMessage[64];
+int16_t error;
+uint32_t serialNumber;
+float aTemperature = 0.00;
+float aHumidity = 0.00;
+bool termosensor = false;
+bool termosensor35 = false;
+
+// Light Sensor
+  int light;
+
+// NTP server to request epoch time
+const char* ntpServer = "mx.pool.ntp.org"; //mx.pool.ntp.org
+const char* ntpServer1 = "pool.ntp.org";
+const char* ntpServer2 = "time.windows.com";
+const char* ntpServer3 = "time.cloudflare.com";
+
+millisDelay updateDelay; // the update delay object. used for ntp periodic update.
+
+unsigned int localPort = 2390;      // local port to listen for UDP packets
+char timeServer[] = "mx.pool.ntp.org"; // extenral NTP server e.g. time.nist.gov
+const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+DateTime now; // declare a time object
+WiFiUDP udp; //The udp library class
+unsigned long devicetime; // localtime
+RTC_SAMD51 rtc;
+String tnow = "";
+
+// Variable to save current epoch time
+// unsigned long epochTime; 
+// struct tm tCurrInfo;
+bool timeSet = false;
+
+// Variable for LogFile
+File LogFile;
 File screenLogo;
 File iconLogo;
 bool sdcard = false;
@@ -276,55 +311,38 @@ void setup() {
 
     tft.begin();
     tft.setRotation(3);
-    spr.createSprite(TFT_HEIGHT, TFT_WIDTH); //Create buffer
+    spr.createSprite(TFT_HEIGHT, TFT_WIDTH);
     beginStartupStatus();
     logStartupStatus("Serial and display initialized");
 
-    // Set PIN Modes
-    pinMode(WIO_LIGHT, INPUT); //Set light sensor pin as INPUT
-    pinMode(WIO_BUZZER, OUTPUT); //Set buzzer pin as OUTPUT
+    pinMode(WIO_LIGHT, INPUT);
+    pinMode(WIO_BUZZER, OUTPUT);
     logStartupStatus("I/O pins configured");
 
- 
-    // Set WiFi to station mode and disconnect from an AP if it was previously connected
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.disconnect();
     logStartupStatus("WiFi stack initialized");
 
-    // SDCard Setup
     Serial.println("Initializing SDCard...");
     if (!SD.begin(SDCARD_SS_PIN, SDCARD_SPI)) {
         Serial.println("Initialization failed!");
         logStartupStatus("SD init failed");
-        while(1);
-    } else{
+    } else {
         Serial.println("File initialization done.");
         logStartupStatus("SD init ok");
         sdcard = true;
         syslogCreated = SD.exists("readings" + String(serialNumber) + ".log");
         unsentlogCreated = SD.exists("unsent" + String(serialNumber) + ".log");
-        Serial.println("readingFile status:" + String(syslogCreated));
-        Serial.println("unsentFile status:" + String(unsentlogCreated));
     }
-    delay(2500);
-    // drawImage<u_int16_t>("procomsa_logotipo_318x238.bmp", 1, 1);
-    // drawImage<u_int16_t>("Procomsa_fi_whiteTxt_32x32.bmp", 15, 10);
 
-    // Sensirion Setup
     Wire.begin();
-
-    // SHT40 temporarily disabled due startup failures under investigation.
     termosensor = false;
     logStartupStatus("SHT40 disabled (temporary)");
 
-    // SHT35 Sensor HT Sensor
-    if (sensor35.init() == NO_ERROR){
+    if (sensor35.init() == NO_ERROR) {
         error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
-
-        Serial.println("Sensor Read Result: " + String(errorMessage));
-
-        if (error == NO_ERROR){
+        if (error == NO_ERROR) {
             termosensor35 = true;
             logStartupStatus("SHT35 read ok");
             logStartupStatus("SHT35 ready");
@@ -332,180 +350,93 @@ void setup() {
             termosensor35 = false;
             logStartupStatus("SHT35 read error");
         }
-        Serial.println("SHT35 sensor initialization successful :" + termosensor35);
     } else {
-        Serial.println("SHT35 sensor initialization failed");
-        logStartupStatus("SHT35 init failed");
         termosensor35 = false;
+        logStartupStatus("SHT35 init failed");
     }
 
+    logStartupStatus("WiFi init deferred to loop");
 
-
-
-    // WiFi Setup
-    DynamicJsonDocument scanData(4096); //4096
-    scanNetworks(&scanData);
-    if (wifissid != 1 && wifissid != 2 && wifissid != 3) {
-      Serial.print("No Available Wifi networks found."); 
-            logStartupStatus("WiFi AP not found");
-
+    if (!rtc.begin()) {
+        logStartupStatus("RTC not found (continue)");
     } else {
-      // char* version = rpc_system_version();
-      // Serial.print("RTL8720 Firmware Version: ");
-      // Serial.println(version);
-      // erpc_free(version);
-
-      connectWiFi();
-      strBaseMac = WiFi.macAddress();
-      Serial.print("MAC address: ");
-      Serial.println(strBaseMac);
-    logStartupStatus("WiFi connected");
-
-      // get the time via NTP (udp) call to time server
-      // getNTPtime returns epoch UTC time adjusted for timezone but not daylight savings
-      // time
-      devicetime = getNTPtime();
-
-      // check if rtc present
-      if (devicetime == 0) {
-          Serial.println("Failed to get time from network time server.");
-          logStartupStatus("NTP sync failed");
-      }
-
-      if (!rtc.begin()) {
-          Serial.println("Couldn't find RTC");
-          logStartupStatus("RTC not found");
-          while (1) delay(10); // stop operating
-      }
-
-      // get and print the current rtc time
-      now = rtc.now();
-      Serial.print("RTC time is: ");
-      Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
-    logStartupStatus("RTC sync ok");
-
-      // adjust time using ntp time
-      rtc.adjust(DateTime(devicetime));
-
-      // print boot update details
-      Serial.println("RTC (boot) time updated.");
-      // get and print the adjusted rtc time
-      now = rtc.now();
-      Serial.print("Adjusted RTC (boot) time is: ");
-      Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
-
-            // Boot-time recovery: drain queued unsent telemetry when possible.
-            resendUnsentLogs(20);
-                logStartupStatus("Unsent queue checked");
-
+        now = rtc.now();
+        logStartupStatus("RTC available");
     }
 
-    // // Usr button Setup
-    // pinMode(buttonPin, INPUT_PULLUP);
-    pinMode(WIO_LIGHT, INPUT);
-              if (ensureWiFiConnected()) {
-                  strBaseMac = WiFi.macAddress();
-                  Serial.print("MAC address: ");
-                  Serial.println(strBaseMac);
-                  logStartupStatus("WiFi connected");
-              } else {
-                  logStartupStatus("WiFi connect timeout (offline)");
-              }
+    pinMode(WIO_KEY_A, INPUT_PULLUP);
+    pinMode(WIO_KEY_B, INPUT_PULLUP);
+    logStartupStatus("Buttons configured");
 
-              if (!rtc.begin()) {
-                  Serial.println("Couldn't find RTC");
-                  logStartupStatus("RTC not found");
-                  while (1) delay(10); // stop operating
-              }
+    client.setCACert(root_ca);
+    logStartupStatus("TLS certificate loaded");
 
-              now = rtc.now();
-              Serial.print("RTC time is: ");
-              Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
+    Serial.println("Starting BLE work!");
+    BLEDevice::init("GGGTermoViewer");
 
-              if (WiFi.status() == WL_CONNECTED) {
-                  // get the time via NTP (udp) call to time server
-                  devicetime = getNTPtime();
-                  if (devicetime == 0) {
-                      Serial.println("Failed to get time from network time server.");
-                      logStartupStatus("NTP sync failed");
-                  } else {
-                      rtc.adjust(DateTime(devicetime));
-                      Serial.println("RTC (boot) time updated.");
-                      now = rtc.now();
-                      Serial.print("Adjusted RTC (boot) time is: ");
-                      Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
-                      logStartupStatus("RTC sync ok");
-                  }
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new MyServerCallbacks());
 
-                  // Boot-time recovery: drain queued unsent telemetry when possible.
-                  resendUnsentLogs(20);
-                  logStartupStatus("Unsent queue checked");
-              }
+    globalServicePtrW = pServer->createService(SERVICEW_UUID);
+    placeCharacteristic = globalServicePtrW->createCharacteristic(
+        PLACE_UUID,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ
+    );
+    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
+    pDescriptor = placeCharacteristic->createDescriptor(
+        DESCRIPTOR_UUID,
+        ATTRIB_FLAG_ASCII_Z,
+        GATT_PERM_READ | GATT_PERM_WRITE,
+        21
+    );
+    pDescriptor->setValue("Place in House");
+    placeCharacteristic->setCallbacks(new PlaceCallbacks());
+    placeCharacteristic->setValue("Anywhere");
+    globalServicePtrW->start();
+
+    globalServicePtrR = pServer->createService(SERVICER_UUID);
     temperatureCharacteristic = globalServicePtrR->createCharacteristic(
-                                            TEMPERATURE_UUID,
-                                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
-                                        ); 
-    temperatureCharacteristic->setAccessPermissions(GATT_PERM_READ); //  | GATT_PERM_NOTIF_IND
-
+        TEMPERATURE_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    temperatureCharacteristic->setAccessPermissions(GATT_PERM_READ);
     temperatureCharacteristic->setValue("Temperature");
     temperatureCharacteristic->setCallbacks(new TemperatureCallbacks());
-    Serial.println("End Temperature");
-
 
     humidityCharacteristic = globalServicePtrR->createCharacteristic(
-                                            HUMIDITY_UUID,
-                                            BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
-                                        ); 
-    humidityCharacteristic->setAccessPermissions(GATT_PERM_READ); //  | GATT_PERM_NOTIF_IND
-
+        HUMIDITY_UUID,
+        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+    );
+    humidityCharacteristic->setAccessPermissions(GATT_PERM_READ);
     humidityCharacteristic->setValue("Humidity");
     humidityCharacteristic->setCallbacks(new HumidityCallbacks());
-    Serial.println("End Humidity");
-
 
     globalServicePtrR->start();
-    Serial.println("Service Started");
     logStartupStatus("BLE services started");
 
-    // BLEAdvertising *pAdvertising = pServer->getAdvertising();  // this still is working for backward compatibility
-    BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+    BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
     pAdvertising->addServiceUUID(SERVICEW_UUID);
     pAdvertising->addServiceUUID(SERVICER_UUID);
     pAdvertising->setScanResponse(true);
-    pAdvertising->setMinPreferred(0x06);  // functions that help with iPhone connections issue
+    pAdvertising->setMinPreferred(0x06);
     pAdvertising->setMinPreferred(0x12);
     BLEDevice::startAdvertising();
-    // pAdvertising->start();
-    Serial.println("BLE Characteristics defined! Now you can read it in your phone!");
     logStartupStatus("BLE advertising active");
 
-    // End Bluetooth Setup
-
     previousMillis = currentMillis - interval;
-    Serial.println("Setup done");
 
-
-    char* version = rpc_system_version();
-    Serial.printf("RTL8720 Firmware Version: %s", rpc_system_version());
-    Serial.println();
-    erpc_free(version);
-
-    // Show first environment values right after boot sequence.
     DynamicJsonDocument bootEnvData(4096);
-    if (termosensor) {
-        getEnvironmentData(&bootEnvData, 40);
-    } else if (termosensor35) {
+    if (termosensor35) {
         getEnvironmentData(&bootEnvData, 35);
     }
     light = analogRead(WIO_LIGHT);
+
     endStartupStatus();
     delay(600);
     sendToScreen();
     screenMillis = millis();
     lastRefreshMillis = screenMillis;
-
 }
-
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
@@ -559,14 +490,7 @@ void loop() {
           // WiFi.disconnect(); 
           // Serial.println("WiFi disconnected waiting " + String(seconds) + " seconds before resend.");
         } else {
-          if (ensureWiFiConnected()) {
-              strBaseMac = WiFi.macAddress();
-              devicetime = getNTPtime();
-              if (devicetime != 0) {
-                  rtc.adjust(DateTime(devicetime));
-              }
-              resendUnsentLogs(20);
-          }
+                    ensureWiFiConnected();
           // TODO: Save results to send later when connection is available
           writeDataLogFile(&envData, true);
           Serial.println("WiFi not connected saving results to send later.");
