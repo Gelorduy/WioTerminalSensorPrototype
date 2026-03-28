@@ -362,14 +362,16 @@ void setup() {
         if (error == NO_ERROR){
             termosensor35 = true;
             logStartupStatus("SHT35 read ok");
+            logStartupStatus("SHT35 ready");
         } else {
+            termosensor35 = false;
             logStartupStatus("SHT35 read error");
         }
         Serial.println("SHT35 sensor initialization successful :" + termosensor35);
-        logStartupStatus("SHT35 ready");
     } else {
         Serial.println("SHT35 sensor initialization failed");
         logStartupStatus("SHT35 init failed");
+        termosensor35 = false;
     }
 
 
@@ -436,52 +438,44 @@ void setup() {
     // // Usr button Setup
     // pinMode(buttonPin, INPUT_PULLUP);
     pinMode(WIO_LIGHT, INPUT);
-    pinMode(WIO_KEY_A, INPUT_PULLUP);
-    pinMode(WIO_KEY_B, INPUT_PULLUP);
-    logStartupStatus("Buttons configured");
+              if (ensureWiFiConnected()) {
+                  strBaseMac = WiFi.macAddress();
+                  Serial.print("MAC address: ");
+                  Serial.println(strBaseMac);
+                  logStartupStatus("WiFi connected");
+              } else {
+                  logStartupStatus("WiFi connect timeout (offline)");
+              }
 
-    client.setCACert(root_ca);
-    logStartupStatus("TLS certificate loaded");
-    //client.setCertificate(test_client_key); // for client verification
-    //client.setPrivateKey(test_client_cert); // for client verification
+              if (!rtc.begin()) {
+                  Serial.println("Couldn't find RTC");
+                  logStartupStatus("RTC not found");
+                  while (1) delay(10); // stop operating
+              }
 
+              now = rtc.now();
+              Serial.print("RTC time is: ");
+              Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
 
-    // Setting Up Bluetooth    
+              if (WiFi.status() == WL_CONNECTED) {
+                  // get the time via NTP (udp) call to time server
+                  devicetime = getNTPtime();
+                  if (devicetime == 0) {
+                      Serial.println("Failed to get time from network time server.");
+                      logStartupStatus("NTP sync failed");
+                  } else {
+                      rtc.adjust(DateTime(devicetime));
+                      Serial.println("RTC (boot) time updated.");
+                      now = rtc.now();
+                      Serial.print("Adjusted RTC (boot) time is: ");
+                      Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
+                      logStartupStatus("RTC sync ok");
+                  }
 
-    Serial.println("Starting BLE work!");
-
-    String devName = "GGG TermoViewer " + String(serialNumber);
-    Serial.println(devName);
-    BLEDevice::init("GGGTermoViewer"); // devName.c_str()
-
-    pServer = BLEDevice::createServer();
-    pServer->setCallbacks(new MyServerCallbacks());
-
-    globalServicePtrW = pServer->createService(SERVICEW_UUID);
-
-    placeCharacteristic = globalServicePtrW->createCharacteristic(
-                                            PLACE_UUID,
-                                            BLECharacteristic::PROPERTY_WRITE | 
-                                            BLECharacteristic::PROPERTY_READ
-                                        ); //   | BLECharacteristic::PROPERTY_WRITE_NR | BLECharacteristic::PROPERTY_NOTIFY
-
-    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE); //  | GATT_PERM_NOTIF_IND
-    pDescriptor = placeCharacteristic->createDescriptor(
-                                         DESCRIPTOR_UUID,
-                                         ATTRIB_FLAG_ASCII_Z,
-                                         GATT_PERM_READ | GATT_PERM_WRITE,
-                                         21
-                                         ); //  ATTRIB_FLAG_VOID | 
-
-    pDescriptor->setValue("Place in House");
-    placeCharacteristic->setCallbacks(new PlaceCallbacks());
-    placeCharacteristic->setValue("Anywhere");
-    Serial.println("End Place");
-
-    globalServicePtrW->start();
-
-    globalServicePtrR = pServer->createService(SERVICER_UUID);
-
+                  // Boot-time recovery: drain queued unsent telemetry when possible.
+                  resendUnsentLogs(20);
+                  logStartupStatus("Unsent queue checked");
+              }
     temperatureCharacteristic = globalServicePtrR->createCharacteristic(
                                             TEMPERATURE_UUID,
                                             BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
