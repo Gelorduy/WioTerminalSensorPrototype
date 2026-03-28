@@ -11,6 +11,31 @@ static const int startupLineHeight = 16;
 static const int startupLogTop = 24;
 static const int startupLogBottom = 238;
 
+static uint16_t startupStatusColor(const String& message) {
+    String probe = message;
+    probe.toLowerCase();
+
+    if (probe.indexOf("fail") >= 0 ||
+        probe.indexOf("error") >= 0 ||
+        probe.indexOf("not found") >= 0 ||
+        probe.indexOf("no ") == 0) {
+        return TFT_RED;
+    }
+
+    if (probe.indexOf("ok") >= 0 ||
+        probe.indexOf("ready") >= 0 ||
+        probe.indexOf("connected") >= 0 ||
+        probe.indexOf("active") >= 0 ||
+        probe.indexOf("started") >= 0 ||
+        probe.indexOf("initialized") >= 0 ||
+        probe.indexOf("checked") >= 0 ||
+        probe.indexOf("complete") >= 0) {
+        return TFT_GREEN;
+    }
+
+    return TFT_WHITE;
+}
+
 void beginStartupStatus() {
     startupLineY = startupLogTop;
     tft.fillScreen(TFT_BLACK);
@@ -28,7 +53,7 @@ void logStartupStatus(const String& message) {
         tft.fillRect(0, startupLogTop, 320, startupLogBottom - startupLogTop, TFT_BLACK);
         startupLineY = startupLogTop;
     }
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextColor(startupStatusColor(message), TFT_BLACK);
     tft.setTextFont(2);
     tft.drawString(message, 6, startupLineY);
     startupLineY += startupLineHeight;
