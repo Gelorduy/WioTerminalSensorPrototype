@@ -309,28 +309,33 @@ class HumidityCallbacks: public BLECharacteristicCallbacks {
 void setup() {
     Serial.begin(9600);
 
+    tft.begin();
+    tft.setRotation(3);
+    spr.createSprite(TFT_HEIGHT, TFT_WIDTH); //Create buffer
+    beginStartupStatus();
+    logStartupStatus("Serial and display initialized");
+
     // Set PIN Modes
     pinMode(WIO_LIGHT, INPUT); //Set light sensor pin as INPUT
     pinMode(WIO_BUZZER, OUTPUT); //Set buzzer pin as OUTPUT
+    logStartupStatus("I/O pins configured");
 
  
     // Set WiFi to station mode and disconnect from an AP if it was previously connected
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.disconnect();
-    
-    // Start Screen
-    tft.begin();
-    tft.setRotation(3);
-    spr.createSprite(TFT_HEIGHT, TFT_WIDTH); //Create buffer
+    logStartupStatus("WiFi stack initialized");
 
     // SDCard Setup
     Serial.println("Initializing SDCard...");
     if (!SD.begin(SDCARD_SS_PIN, SDCARD_SPI)) {
         Serial.println("Initialization failed!");
+        logStartupStatus("SD init failed");
         while(1);
     } else{
         Serial.println("File initialization done.");
+        logStartupStatus("SD init ok");
         sdcard = true;
         syslogCreated = SD.exists("readings" + String(serialNumber) + ".log");
         unsentlogCreated = SD.exists("unsent" + String(serialNumber) + ".log");
@@ -352,8 +357,10 @@ void setup() {
         Serial.print("Error trying to execute serialNumber(): ");
         errorToString(error, errorMessage, sizeof errorMessage);
         Serial.println(errorMessage);
+        logStartupStatus("SHT40 init error");
     } else {
         termosensor = true;
+        logStartupStatus("SHT40 ready");
     }
     Serial.print("serialNumberSHT40: ");
     Serial.print(serialNumber);
@@ -369,8 +376,10 @@ void setup() {
             termosensor35 = true;
         }
         Serial.println("SHT35 sensor initialization successful :" + termosensor35);
+        logStartupStatus("SHT35 ready");
     } else {
         Serial.println("SHT35 sensor initialization failed");
+        logStartupStatus("SHT35 init failed");
     }
 
 
@@ -381,6 +390,7 @@ void setup() {
     scanNetworks(&scanData);
     if (wifissid != 1 && wifissid != 2 && wifissid != 3) {
       Serial.print("No Available Wifi networks found."); 
+            logStartupStatus("WiFi AP not found");
 
     } else {
       // char* version = rpc_system_version();
@@ -392,6 +402,7 @@ void setup() {
       strBaseMac = WiFi.macAddress();
       Serial.print("MAC address: ");
       Serial.println(strBaseMac);
+    logStartupStatus("WiFi connected");
 
       // get the time via NTP (udp) call to time server
       // getNTPtime returns epoch UTC time adjusted for timezone but not daylight savings
@@ -401,10 +412,12 @@ void setup() {
       // check if rtc present
       if (devicetime == 0) {
           Serial.println("Failed to get time from network time server.");
+          logStartupStatus("NTP sync failed");
       }
 
       if (!rtc.begin()) {
           Serial.println("Couldn't find RTC");
+          logStartupStatus("RTC not found");
           while (1) delay(10); // stop operating
       }
 
@@ -412,6 +425,7 @@ void setup() {
       now = rtc.now();
       Serial.print("RTC time is: ");
       Serial.println(now.timestamp(DateTime::TIMESTAMP_FULL));
+    logStartupStatus("RTC sync ok");
 
       // adjust time using ntp time
       rtc.adjust(DateTime(devicetime));
@@ -425,6 +439,7 @@ void setup() {
 
             // Boot-time recovery: drain queued unsent telemetry when possible.
             resendUnsentLogs(20);
+                logStartupStatus("Unsent queue checked");
 
     }
 
@@ -433,8 +448,10 @@ void setup() {
     pinMode(WIO_LIGHT, INPUT);
     pinMode(WIO_KEY_A, INPUT_PULLUP);
     pinMode(WIO_KEY_B, INPUT_PULLUP);
+    logStartupStatus("Buttons configured");
 
     client.setCACert(root_ca);
+    logStartupStatus("TLS certificate loaded");
     //client.setCertificate(test_client_key); // for client verification
     //client.setPrivateKey(test_client_cert); // for client verification
 
@@ -499,6 +516,7 @@ void setup() {
 
     globalServicePtrR->start();
     Serial.println("Service Started");
+    logStartupStatus("BLE services started");
 
     // BLEAdvertising *pAdvertising = pServer->getAdvertising();  // this still is working for backward compatibility
     BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
@@ -510,6 +528,7 @@ void setup() {
     BLEDevice::startAdvertising();
     // pAdvertising->start();
     Serial.println("BLE Characteristics defined! Now you can read it in your phone!");
+    logStartupStatus("BLE advertising active");
 
     // End Bluetooth Setup
 
@@ -521,6 +540,20 @@ void setup() {
     Serial.printf("RTL8720 Firmware Version: %s", rpc_system_version());
     Serial.println();
     erpc_free(version);
+
+    // Show first environment values right after boot sequence.
+    DynamicJsonDocument bootEnvData(4096);
+    if (termosensor) {
+        getEnvironmentData(&bootEnvData, 40);
+    } else if (termosensor35) {
+        getEnvironmentData(&bootEnvData, 35);
+    }
+    light = analogRead(WIO_LIGHT);
+    endStartupStatus();
+    delay(600);
+    sendToScreen();
+    screenMillis = millis();
+    lastRefreshMillis = screenMillis;
 
 }
 

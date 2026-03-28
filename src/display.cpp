@@ -6,6 +6,40 @@
 
 #define TFT_PROCOMSABLUE 0x2A51
 
+static int startupLineY = 24;
+static const int startupLineHeight = 16;
+static const int startupLogTop = 24;
+static const int startupLogBottom = 238;
+
+void beginStartupStatus() {
+    startupLineY = startupLogTop;
+    tft.fillScreen(TFT_BLACK);
+    tft.fillRect(0, 0, 320, 20, TFT_PROCOMSABLUE);
+    tft.setTextColor(TFT_WHITE, TFT_PROCOMSABLUE);
+    tft.setTextFont(2);
+    tft.drawString("Startup monitor", 6, 4);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.drawString("Boot sequence:", 6, startupLogTop);
+    startupLineY += startupLineHeight;
+}
+
+void logStartupStatus(const String& message) {
+    if (startupLineY + startupLineHeight > startupLogBottom) {
+        tft.fillRect(0, startupLogTop, 320, startupLogBottom - startupLogTop, TFT_BLACK);
+        startupLineY = startupLogTop;
+    }
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextFont(2);
+    tft.drawString(message, 6, startupLineY);
+    startupLineY += startupLineHeight;
+}
+
+void endStartupStatus() {
+    logStartupStatus("Init complete, loading data screen...");
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.drawString("READY", 6, startupLineY);
+}
+
 void sendToScreen() {
     tft.fillScreen(TFT_BLACK);
     tft.fillRect(0, 0, 320, 55, TFT_PROCOMSABLUE);
