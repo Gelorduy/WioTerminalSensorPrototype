@@ -1,10 +1,40 @@
 #include "display.h"
 
 #include <Arduino.h>
+#include <rpcWiFi.h>
+#include "SD/Seeed_SD.h"
 #include "Free_Fonts.h"
 #include "app_state.h"
+#include "network.h"
+#include "storage.h"
 
 #define TFT_PROCOMSABLUE 0x2A51
+
+// Smaller WiFi icon for bottom of screen
+static void drawWiFiIconSmall(int cx, int cy, bool connected) {
+    uint16_t color = connected ? TFT_GREEN : TFT_RED;
+    uint16_t bg    = TFT_BLACK;
+    // Dot
+    spr.fillCircle(cx, cy, 1, color);
+    // Small arc
+    spr.drawCircle(cx, cy, 4, color);
+    spr.fillRect(cx - 5, cy + 1, 10, 5, bg);
+    // Medium arc
+    spr.drawCircle(cx, cy, 8, color);
+    spr.fillRect(cx - 9, cy + 1, 18, 8, bg);
+}
+
+static String fitHeaderText(const String& text, size_t maxLen) {
+    if (text.length() <= maxLen) {
+        return text;
+    }
+
+    if (maxLen <= 3) {
+        return text.substring(0, maxLen);
+    }
+
+    return text.substring(0, maxLen - 3) + "...";
+}
 
 static int startupLineY = 24;
 static const int startupLineHeight = 16;
@@ -49,6 +79,7 @@ void beginStartupStatus() {
 }
 
 void logStartupStatus(const String& message) {
+    appendEventLog("startup: " + message);
     if (startupLineY + startupLineHeight > startupLogBottom) {
         tft.fillRect(0, startupLogTop, 320, startupLogBottom - startupLogTop, TFT_BLACK);
         startupLineY = startupLogTop;
@@ -65,36 +96,216 @@ void endStartupStatus() {
     tft.drawString("READY", 6, startupLineY);
 }
 
+static void drawWindowHeader(const String& title, const String& subtitle) {
+    spr.fillSprite(TFT_BLACK);
+    spr.fillRect(0, 0, 320, 28, TFT_PROCOMSABLUE);
+    spr.setTextColor(TFT_WHITE, TFT_PROCOMSABLUE);
+    spr.setTextFont(2);
+    spr.drawString(title, 8, 6);
+    spr.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    spr.drawString(subtitle, 8, 34);
+}
+
+void sendMenuScreen(int selectedIndex) {
+    static const char* options[3] = {
+        "Show Log",
+        "Main Screen",
+        "Config Screen"
+    };
+
+    drawWindowHeader("Menu", "UP/DOWN to move, PRESS to select");
+
+    int y = 72;
+    for (int i = 0; i < 3; ++i) {
+        bool selected = (i == selectedIndex);
+        uint16_t bg = selected ? TFT_PROCOMSABLUE : TFT_BLACK;
+        uint16_t fg = selected ? TFT_WHITE : TFT_LIGHTGREY;
+
+        spr.fillRoundRect(14, y - 4, 292, 28, 6, bg);
+        spr.setTextColor(fg, bg);
+        spr.setTextFont(2);
+        spr.drawString(String(selected ? "> " : "  ") + options[i], 22, y);
+        y += 42;
+    }
+
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.drawString("RIGHT from Main opens this menu", 8, 214);
+    spr.pushSprite(0, 0);
+}
+
+void sendLogMenuScreen(int selectedIndex) {
+    static const char* options[2] = {
+        "Temperature Log",
+        "Events Log"
+    };
+
+    drawWindowHeader("Log Menu", "UP/DOWN move, PRESS open, LEFT back");
+
+    int y = 84;
+    for (int i = 0; i < 2; ++i) {
+        bool selected = (i == selectedIndex);
+        uint16_t bg = selected ? TFT_PROCOMSABLUE : TFT_BLACK;
+        uint16_t fg = selected ? TFT_WHITE : TFT_LIGHTGREY;
+
+        spr.fillRoundRect(14, y - 4, 292, 30, 6, bg);
+        spr.setTextColor(fg, bg);
+        spr.setTextFont(2);
+        spr.drawString(String(selected ? "> " : "  ") + options[i], 22, y);
+        y += 44;
+    }
+
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.drawString("Select which log to browse", 8, 214);
+    spr.pushSprite(0, 0);
+}
+
+void sendLogViewerScreen(bool eventsLog, int scrollOffset) {
+    const String logName = eventsLog ? ("events" + String(serialNumber) + ".log")
+                                     : ("readings" + String(serialNumber) + ".log");
+    const String subtitle = eventsLog ? "Events log (UP/DOWN scroll)" : "Temperature log (UP/DOWN scroll)";
+
+    drawWindowHeader(eventsLog ? "Events Log" : "Temperature Log", subtitle);
+
+    spr.setTextFont(2);
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("File: " + fitHeaderText(logName, 30), 8, 56);
+
+    File logFile = SD.open(logName, FILE_READ);
+    if (!logFile) {
+        spr.setTextColor(TFT_RED, TFT_BLACK);
+        spr.drawString("No log file found", 8, 92);
+        spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        spr.drawString("LEFT: back to log menu", 8, 214);
+        spr.pushSprite(0, 0);
+        return;
+    }
+
+    const int kVisibleLines = 10;
+    String lines[kVisibleLines];
+    int lineIndex = 0;
+    int shown = 0;
+
+    while (logFile.available()) {
+        String line = logFile.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) {
+            continue;
+        }
+        if (lineIndex >= scrollOffset && shown < kVisibleLines) {
+            lines[shown] = line;
+            shown++;
+        }
+        lineIndex++;
+        if (shown >= kVisibleLines) {
+            break;
+        }
+    }
+    logFile.close();
+
+    if (shown == 0) {
+        spr.setTextColor(TFT_ORANGE, TFT_BLACK);
+        spr.drawString("No entries at this position", 8, 92);
+    } else {
+        int y = 72;
+        for (int i = 0; i < shown; ++i) {
+            spr.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+            spr.drawString(fitHeaderText(lines[i], 43), 8, y);
+            y += 15;
+        }
+    }
+
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.drawString("Offset: " + String(scrollOffset) + "  LEFT: menu", 8, 214);
+    spr.pushSprite(0, 0);
+}
+
+static void logMainScreenSnapshot(const String& location,
+                                  const String& screenTime,
+                                  float temperature,
+                                  float humidity,
+                                  int lightPercent,
+                                  const String& wifiName,
+                                  const String& wifiIp,
+                                  bool wifiConnected,
+                                  const String& wifiFailureReason) {
+    String snapshot = "main: loc=" + location +
+                      " time=" + screenTime +
+                      " temp=" + String(temperature, 2) + "C" +
+                      " hum=" + String(humidity, 2) + "%" +
+                      " light=" + String(lightPercent) + "%" +
+                      " wifi=" + (wifiConnected ? wifiName : "offline") +
+                      " ip=" + (wifiConnected ? wifiIp : "no ip");
+    if (!wifiConnected && wifiFailureReason.length() > 0) {
+        snapshot += " reason=" + wifiFailureReason;
+    }
+    appendEventLog(snapshot);
+}
+
+void sendConfigScreen() {
+    drawWindowHeader("Config Window", "Placeholder - config options coming next");
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.setTextFont(2);
+    spr.drawString("Current WiFi:", 8, 88);
+    bool wifiConnected = WiFi.status() == WL_CONNECTED;
+    spr.setTextColor(wifiConnected ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    spr.drawString(wifiConnected ? fitHeaderText(WiFi.SSID(), 30) : "offline", 8, 110);
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("IP:", 8, 146);
+    spr.setTextColor(TFT_CYAN, TFT_BLACK);
+    spr.drawString(wifiConnected ? fitHeaderText(WiFi.localIP().toString(), 30) : "no ip", 8, 168);
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.drawString("LEFT: Menu", 8, 214);
+    spr.pushSprite(0, 0);
+}
+
 void sendToScreen() {
-    tft.fillScreen(TFT_BLACK);
-    tft.fillRect(0, 0, 320, 55, TFT_PROCOMSABLUE);
-    tft.setTextColor(TFT_WHITE);
-    tft.setFreeFont(FSSO12);
-    tft.drawString("Termocheck", 50, 10);
-    tft.setFreeFont(FSSO9);
+    spr.fillSprite(TFT_BLACK);
+    spr.fillRect(0, 0, 320, 55, TFT_PROCOMSABLUE);
+    spr.setTextColor(TFT_WHITE);
+    spr.setFreeFont(FSSO12);
+    spr.drawString("Termocheck", 50, 10);
+    spr.setFreeFont(FSSO9);
     String location = "GGG-" + String(placeCharacteristic->getValue().c_str());
-    tft.drawString(location, 50, 35);
+    spr.drawString(location, 50, 35);
     if (tnow == "") {
         now = rtc.now();
     }
     char fmt[] = "MMM DD hh:mm";
     tnow = now.toString(fmt);
-    tft.drawString(tnow, 210, 10);
+    spr.drawString(tnow, 210, 10);
     String sLight = "Luz: " + String(light) + " %";
-    tft.drawString(sLight, 230, 35);
+    spr.drawString(sLight, 230, 35);
 
-    tft.drawFastVLine(160, 55, 95, TFT_PROCOMSABLUE);
-    tft.drawFastHLine(0, 150, 320, TFT_PROCOMSABLUE);
+    spr.drawFastVLine(160, 55, 95, TFT_PROCOMSABLUE);
+    spr.drawFastHLine(0, 150, 320, TFT_PROCOMSABLUE);
 
-    tft.setFreeFont(FSSO12);
-    tft.setTextColor(TFT_WHITE);
-    tft.drawString("Temp C", 35, 63);
-    tft.setFreeFont(FSSO24);
-    tft.drawFloat(aTemperature, 2, 20, 100);
+    spr.setFreeFont(FSSO12);
+    spr.setTextColor(TFT_WHITE);
+    spr.drawString("Temp C", 35, 63);
+    spr.setFreeFont(FSSO24);
+    spr.drawFloat(aTemperature, 2, 20, 100);
 
-    tft.setFreeFont(FSSO12);
-    tft.drawString("Hum Rel %", 180, 63);
-    tft.setFreeFont(FSSO24);
-    tft.drawFloat(aHumidity, 2, 180, 100);
+    spr.setFreeFont(FSSO12);
+    spr.drawString("Hum Rel %", 180, 63);
+    spr.setFreeFont(FSSO24);
+    spr.drawFloat(aHumidity, 2, 180, 100);
 
+    // WiFi status at bottom
+    bool wifiConnected = WiFi.status() == WL_CONNECTED;
+    drawWiFiIconSmall(15, 225, wifiConnected);
+    spr.setTextColor(wifiConnected ? TFT_GREEN : TFT_RED);
+    spr.setTextFont(1);
+    String wifiFailureReason = "";
+    if (!wifiConnected) {
+        wifiFailureReason = fitHeaderText(getLastWiFiFailureReason(), 40);
+        spr.drawString(wifiFailureReason, 8, 206);
+    }
+    String wifiName = wifiConnected ? fitHeaderText(WiFi.SSID(), 18) : "offline";
+    String wifiIp = wifiConnected ? WiFi.localIP().toString() : "no ip";
+    spr.drawString(wifiName, 28, 220);
+    spr.drawString(fitHeaderText(wifiIp, 20), 28, 232);
+
+    spr.pushSprite(0, 0);
+
+    logMainScreenSnapshot(location, tnow, aTemperature, aHumidity, light, wifiName, wifiIp, wifiConnected, wifiFailureReason);
 }

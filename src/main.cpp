@@ -89,6 +89,7 @@ unsigned long wioKEYBMillis = 0;
 
 const unsigned long interval = 60000; // interval between scans 60 seconds
 const unsigned long screenInterval = 10000; // interval to keep screen display 10 seconds
+const unsigned long screenRefreshInterval = 1000; // redraw cadence while screen is active
 const unsigned long seconds = interval/1000;
 
 
@@ -303,7 +304,221 @@ class HumidityCallbacks: public BLECharacteristicCallbacks {
 };
 
 
+enum UiWindow {
+    UI_WINDOW_MAIN = 0,
+    UI_WINDOW_MENU,
+    UI_WINDOW_LOG_MENU,
+    UI_WINDOW_LOG_VIEW,
+    UI_WINDOW_CONFIG
+};
+
+static UiWindow sUiWindow = UI_WINDOW_MAIN;
+static int sMenuSelection = 0;
+static int sLogMenuSelection = 0;
+static int sLogScrollOffset = 0;
+static bool sShowEventsLog = false;
+static bool sJoystickLocked = false;
+static const int kLogPageSize = 10;
+static unsigned long sLastNtpSyncMs = 0;
+static const unsigned long kNtpResyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
+static unsigned long sLastPostProcessMs = 0;
+static const unsigned long kPostProcessIntervalMs = 15000;
+
+static bool isUserInteracting() {
+    return digitalRead(WIO_KEY_A) == LOW ||
+           digitalRead(WIO_KEY_B) == LOW ||
+           digitalRead(WIO_5S_UP) == LOW ||
+           digitalRead(WIO_5S_DOWN) == LOW ||
+           digitalRead(WIO_5S_LEFT) == LOW ||
+           digitalRead(WIO_5S_RIGHT) == LOW ||
+           digitalRead(WIO_5S_PRESS) == LOW;
+}
+
+static bool isJoystickPressed(int pin) {
+    return digitalRead(pin) == LOW;
+}
+
+static bool isAnyJoystickDirectionPressed() {
+    return isJoystickPressed(WIO_5S_UP) ||
+           isJoystickPressed(WIO_5S_DOWN) ||
+           isJoystickPressed(WIO_5S_LEFT) ||
+           isJoystickPressed(WIO_5S_RIGHT) ||
+           isJoystickPressed(WIO_5S_PRESS);
+}
+
+static void renderActiveWindow() {
+    if (sUiWindow == UI_WINDOW_MAIN) {
+        sendToScreen();
+    } else if (sUiWindow == UI_WINDOW_MENU) {
+        sendMenuScreen(sMenuSelection);
+    } else if (sUiWindow == UI_WINDOW_LOG_MENU) {
+        sendLogMenuScreen(sLogMenuSelection);
+    } else if (sUiWindow == UI_WINDOW_LOG_VIEW) {
+        sendLogViewerScreen(sShowEventsLog, sLogScrollOffset);
+    } else {
+        sendConfigScreen();
+    }
+}
+
+static void handleJoystickNavigation() {
+    if (sJoystickLocked) {
+        if (!isAnyJoystickDirectionPressed()) {
+            sJoystickLocked = false;
+        }
+        return;
+    }
+
+    if (isJoystickPressed(WIO_5S_RIGHT)) {
+        if (sUiWindow == UI_WINDOW_MAIN) {
+            sUiWindow = UI_WINDOW_MENU;
+            renderActiveWindow();
+        }
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (isJoystickPressed(WIO_5S_LEFT)) {
+        if (sUiWindow == UI_WINDOW_MENU) {
+            sUiWindow = UI_WINDOW_MAIN;
+            renderActiveWindow();
+        } else if (sUiWindow == UI_WINDOW_LOG_MENU || sUiWindow == UI_WINDOW_CONFIG) {
+            sUiWindow = UI_WINDOW_MENU;
+            renderActiveWindow();
+        } else if (sUiWindow == UI_WINDOW_LOG_VIEW) {
+            sUiWindow = UI_WINDOW_LOG_MENU;
+            renderActiveWindow();
+        }
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_MENU && isJoystickPressed(WIO_5S_UP)) {
+        sMenuSelection = (sMenuSelection + 2) % 3;
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_MENU && isJoystickPressed(WIO_5S_DOWN)) {
+        sMenuSelection = (sMenuSelection + 1) % 3;
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_MENU && isJoystickPressed(WIO_5S_PRESS)) {
+        if (sMenuSelection == 0) {
+            sUiWindow = UI_WINDOW_LOG_MENU;
+        } else if (sMenuSelection == 1) {
+            sUiWindow = UI_WINDOW_MAIN;
+        } else {
+            sUiWindow = UI_WINDOW_CONFIG;
+        }
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_LOG_MENU && isJoystickPressed(WIO_5S_UP)) {
+        sLogMenuSelection = (sLogMenuSelection + 1) % 2;
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_LOG_MENU && isJoystickPressed(WIO_5S_DOWN)) {
+        sLogMenuSelection = (sLogMenuSelection + 1) % 2;
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_LOG_MENU && isJoystickPressed(WIO_5S_PRESS)) {
+        sShowEventsLog = (sLogMenuSelection == 1);
+        sLogScrollOffset = 0;
+        sUiWindow = UI_WINDOW_LOG_VIEW;
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_LOG_VIEW && isJoystickPressed(WIO_5S_UP)) {
+        sLogScrollOffset = max(0, sLogScrollOffset - kLogPageSize);
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_LOG_VIEW && isJoystickPressed(WIO_5S_DOWN)) {
+        sLogScrollOffset += kLogPageSize;
+        renderActiveWindow();
+        sJoystickLocked = true;
+    }
+}
+
+
 // End Bluetooth
+
+static void logVisibleNetworksToStartupMonitor() {
+    DynamicJsonDocument scanData(4096);
+    wifissid = 0;
+    scanNetworks(&scanData);
+
+    JsonObject aps = scanData.as<JsonObject>();
+    int shownCount = 0;
+    for (JsonPair kv : aps) {
+        JsonObject ap = kv.value().as<JsonObject>();
+        String apName = ap["name"] | "";
+        int signal = ap["signal"] | 0;
+        if (apName.length() == 0) {
+            continue;
+        }
+
+        String line = apName + " (" + String(signal) + "dBm)";
+        logStartupStatus(line);
+        shownCount++;
+        if (shownCount >= 6) {
+            break;
+        }
+    }
+
+    if (shownCount == 0) {
+        logStartupStatus("No APs visible");
+    }
+}
+
+static void waitForWifiDebugOrContinue() {
+    unsigned long lastRefreshMs = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+        if (digitalRead(WIO_KEY_A) == LOW || digitalRead(WIO_KEY_B) == LOW) {
+            break;
+        }
+
+        if (lastRefreshMs == 0 || millis() - lastRefreshMs >= 4000) {
+            logStartupStatus("WiFi retry + scan...");
+            if (ensureWiFiConnected()) {
+                logStartupStatus("Connected: " + WiFi.SSID());
+                logStartupStatus("IP: " + WiFi.localIP().toString());
+                break;
+            }
+
+            logStartupStatus(getLastWiFiFailureReason());
+            logStartupStatus(getLastWiFiTargetSummary());
+            logVisibleNetworksToStartupMonitor();
+            logStartupStatus("WiFi status: " + wifiStatusToString(WiFi.status()));
+            logStartupStatus("Press A or B to continue");
+            lastRefreshMs = millis();
+        }
+
+        delay(100);
+    }
+
+    delay(150);
+}
+
+static void startupWiFiStatusSink(const String& message) {
+    logStartupStatus(message);
+}
 
 
 void setup() {
@@ -311,8 +526,16 @@ void setup() {
 
     tft.begin();
     tft.setRotation(3);
-    spr.createSprite(TFT_HEIGHT, TFT_WIDTH);
+    bool spriteReady = false;
+    spr.setColorDepth(16);
+    spriteReady = (spr.createSprite(320, 240) != nullptr);
+    if (!spriteReady) {
+        // Fall back to 8-bit to reduce RAM pressure on Wio Terminal.
+        spr.setColorDepth(8);
+        spriteReady = (spr.createSprite(320, 240) != nullptr);
+    }
     beginStartupStatus();
+    logStartupStatus(spriteReady ? "Display buffer ready" : "Display buffer alloc failed");
     logStartupStatus("Serial and display initialized");
 
     pinMode(WIO_LIGHT, INPUT);
@@ -322,6 +545,7 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.disconnect();
+    setWiFiStatusCallback(startupWiFiStatusSink);
     logStartupStatus("WiFi stack initialized");
 
     Serial.println("Initializing SDCard...");
@@ -341,21 +565,29 @@ void setup() {
     logStartupStatus("SHT40 disabled (temporary)");
 
     if (sensor35.init() == NO_ERROR) {
-        error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
-        if (error == NO_ERROR) {
-            termosensor35 = true;
-            logStartupStatus("SHT35 read ok");
-            logStartupStatus("SHT35 ready");
-        } else {
-            termosensor35 = false;
-            logStartupStatus("SHT35 read error");
+        logStartupStatus("SHT35 init ok");
+        // Retry up to 5 times — sensor may need time after Wire.begin()
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            delay(100);
+            error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
+            Serial.print("SHT35 read attempt " + String(attempt) + " error=");
+            Serial.println(error);
+            if (error == NO_ERROR) {
+                termosensor35 = true;
+                logStartupStatus("SHT35 ready (attempt " + String(attempt) + ")");
+                break;
+            }
+        }
+        if (!termosensor35) {
+            logStartupStatus("SHT35 read failed after 5 attempts");
+            Serial.print("SHT35 last error code: ");
+            Serial.println(error);
         }
     } else {
         termosensor35 = false;
         logStartupStatus("SHT35 init failed");
+        Serial.println("SHT35 init error");
     }
-
-    logStartupStatus("WiFi init deferred to loop");
 
     if (!rtc.begin()) {
         logStartupStatus("RTC not found (continue)");
@@ -366,6 +598,11 @@ void setup() {
 
     pinMode(WIO_KEY_A, INPUT_PULLUP);
     pinMode(WIO_KEY_B, INPUT_PULLUP);
+    pinMode(WIO_5S_UP, INPUT_PULLUP);
+    pinMode(WIO_5S_DOWN, INPUT_PULLUP);
+    pinMode(WIO_5S_LEFT, INPUT_PULLUP);
+    pinMode(WIO_5S_RIGHT, INPUT_PULLUP);
+    pinMode(WIO_5S_PRESS, INPUT_PULLUP);
     logStartupStatus("Buttons configured");
 
     client.setCACert(root_ca);
@@ -423,6 +660,36 @@ void setup() {
     BLEDevice::startAdvertising();
     logStartupStatus("BLE advertising active");
 
+    logStartupStatus("Scanning WiFi networks...");
+    logVisibleNetworksToStartupMonitor();
+
+    if (ensureWiFiConnected()) {
+        logStartupStatus("Connected: " + WiFi.SSID());
+        logStartupStatus("IP: " + WiFi.localIP().toString());
+        if (syncRtcFromNtp()) {
+            sLastNtpSyncMs = millis();
+            logStartupStatus("NTP sync ok");
+        } else {
+            logStartupStatus("NTP sync failed");
+        }
+    } else {
+        logStartupStatus("WiFi connect failed");
+        logStartupStatus(getLastWiFiFailureReason());
+        logStartupStatus(getLastWiFiTargetSummary());
+        logStartupStatus("Looking for: " + String(ssid));
+        waitForWifiDebugOrContinue();
+        if (WiFi.status() != WL_CONNECTED) {
+            logStartupStatus("Continuing without WiFi");
+        } else {
+            if (syncRtcFromNtp()) {
+                sLastNtpSyncMs = millis();
+                logStartupStatus("NTP sync ok");
+            } else {
+                logStartupStatus("NTP sync failed");
+            }
+        }
+    }
+
     previousMillis = currentMillis - interval;
 
     DynamicJsonDocument bootEnvData(4096);
@@ -432,20 +699,39 @@ void setup() {
     light = analogRead(WIO_LIGHT);
 
     endStartupStatus();
-    delay(600);
-    sendToScreen();
+    setWiFiStatusCallback(nullptr);
+    {
+        unsigned long waitStart = millis();
+        tft.setTextFont(2);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString("Press A/B to continue (3s)", 6, 222);
+        while (digitalRead(WIO_KEY_A) != LOW && digitalRead(WIO_KEY_B) != LOW) {
+            if ((millis() - waitStart) >= 3000) {
+                break;
+            }
+            delay(50);
+        }
+        delay(150);
+    }
+        renderActiveWindow();
     screenMillis = millis();
     lastRefreshMillis = screenMillis;
 }
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
+        handleJoystickNavigation();
+
+    if (WiFi.status() != WL_CONNECTED) {
+        // Keep reconnection attempts independent from display refresh cadence.
+        ensureWiFiConnected();
+    }
 
     if (digitalRead(WIO_KEY_A) == LOW) {
         screenMillis = currentMillis;
         bscreenOn = false;
         Serial.println("screenmillis:" + String(screenMillis));
-    } else if (digitalRead(WIO_KEY_B) == LOW && (currentMillis - wioKEYBMillis > 1000)) {
+    } else if (digitalRead(WIO_KEY_B) == LOW && (currentMillis - wioKEYBMillis > 4000)) {
         wioKEYBMillis = currentMillis;
         bscreenOn = !bscreenOn;
         Serial.println("bscreenOn:" + String(bscreenOn));
@@ -457,6 +743,18 @@ void loop() {
         previousMillis = currentMillis; // update the last blink time
         
         // Get Environment Data
+        // If SHT35 failed in setup, try to recover it once per cycle
+        if (!termosensor35) {
+            Serial.println("SHT35 not active — attempting recovery...");
+            if (sensor35.init() == NO_ERROR) {
+                error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
+                Serial.print("SHT35 recovery read error="); Serial.println(error);
+                if (error == NO_ERROR) {
+                    termosensor35 = true;
+                    Serial.println("SHT35 recovered ok");
+                }
+            }
+        }
         DynamicJsonDocument envData(4096);
         if (termosensor){
             getEnvironmentData(&envData, 40);
@@ -467,33 +765,12 @@ void loop() {
         light = analogRead(WIO_LIGHT);
         Serial.println("Luz:" + String(light));
 
-        // Send results to server
-        if(WiFi.status() == WL_CONNECTED){
-                    // Periodically retry unsent backlog before sending the latest reading.
-                    resendUnsentLogs(5);
-                    int res = sendPostMessage(&envData);
-                    if (res == 1){
-                            writeDataLogFile(&envData, true);
-                    }
-
-            //Condition for low soil moisture
-            // if(sensorValue < 50){
-            //   spr.fillSprite(TFT_RED);
-            //   spr.drawString("Time to water!",35,100);
-            //   analogWrite(WIO_BUZZER, 150); //beep the buzzer
-            //   delay(1000);
-            //   analogWrite(WIO_BUZZER, 0); //Silence the buzzer
-            //   delay(1000);
-            // }
-
-          // Disconnect to conserve energy and wait a bit before scanning again
-          // WiFi.disconnect(); 
-          // Serial.println("WiFi disconnected waiting " + String(seconds) + " seconds before resend.");
-        } else {
-                    ensureWiFiConnected();
-          // TODO: Save results to send later when connection is available
-          writeDataLogFile(&envData, true);
-          Serial.println("WiFi not connected saving results to send later.");
+                // Always queue first on disk, then background sender confirms with HTTP 200.
+                if (!enqueuePostForRetry(&envData)) {
+                        appendEventLog("queue: enqueue failed");
+                }
+                if (WiFi.status() != WL_CONNECTED) {
+                    Serial.println("WiFi not connected, payload queued for retry.");
         }
         writeDataLogFile(&envData, false);
 
@@ -509,14 +786,32 @@ void loop() {
         }
     }
 
-    if ((currentMillis - screenMillis <= screenInterval && currentMillis - lastRefreshMillis >= 5000) || bscreenOn) {
-      // getTime();
-      digitalWrite(LCD_BACKLIGHT, HIGH);
-      sendToScreen();
-      lastRefreshMillis = currentMillis;
-    } else if (digitalRead(LCD_BACKLIGHT) == HIGH && currentMillis - lastRefreshMillis >= screenInterval) {
-      digitalWrite(LCD_BACKLIGHT, LOW);
+        bool screenShouldBeOn = bscreenOn || (currentMillis - screenMillis <= screenInterval);
+        if (screenShouldBeOn) {
+            digitalWrite(LCD_BACKLIGHT, HIGH);
+            if (currentMillis - lastRefreshMillis >= screenRefreshInterval) {
+                renderActiveWindow();
+                lastRefreshMillis = currentMillis;
+            }
+        } else if (digitalRead(LCD_BACKLIGHT) == HIGH) {
+            digitalWrite(LCD_BACKLIGHT, LOW);
     }
+
+        if (WiFi.status() == WL_CONNECTED &&
+                (sLastNtpSyncMs == 0 || (currentMillis - sLastNtpSyncMs) >= kNtpResyncIntervalMs)) {
+                if (syncRtcFromNtp()) {
+                        sLastNtpSyncMs = currentMillis;
+                }
+        }
+
+        if (WiFi.status() == WL_CONNECTED &&
+            (sLastPostProcessMs == 0 || (currentMillis - sLastPostProcessMs) >= kPostProcessIntervalMs)) {
+            // Only process queued posts when user is idle to avoid input lag.
+            if (!isUserInteracting() && sUiWindow == UI_WINDOW_MAIN) {
+                processPendingPosts(1);
+                sLastPostProcessMs = currentMillis;
+            }
+        }
 
 
   // Write File

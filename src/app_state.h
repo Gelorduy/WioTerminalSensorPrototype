@@ -29,6 +29,7 @@ extern const char* password;
 extern const char* alternatessid;
 extern const char* alternatepassword;
 extern const char* mobilessid;
+extern const char* mobilepassword;
 extern int wifissid;
 extern int channels[11];
 extern float distance;
@@ -54,6 +55,7 @@ extern RTC_SAMD51 rtc;
 extern String tnow;
 
 extern File LogFile;
+extern bool sdcard;
 extern bool syslogCreated;
 extern bool unsentlogCreated;
 

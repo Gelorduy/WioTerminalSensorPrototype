@@ -11,6 +11,10 @@ static String getUnsentLogName() {
     return "unsent" + String(serialNumber) + ".log";
 }
 
+static String getEventsLogName() {
+    return "events" + String(serialNumber) + ".log";
+}
+
 static void rotateLogIfNeeded(const String& logName) {
     if (!SD.exists(logName)) {
         return;
@@ -75,7 +79,37 @@ void writeDataLogFile(DynamicJsonDocument* jsonDoc, bool unSent) {
 }
 
 bool resendUnsentLogs(size_t maxEntries) {
-    if (WiFi.status() != WL_CONNECTED) {
+    return processPendingPosts(maxEntries);
+}
+
+bool enqueuePostForRetry(DynamicJsonDocument* jsonDoc) {
+    if (!sdcard || jsonDoc == nullptr) {
+        return false;
+    }
+
+    String unsentName = getUnsentLogName();
+    rotateLogIfNeeded(unsentName);
+
+    File queueFile = SD.open(unsentName, FILE_APPEND);
+    if (!queueFile) {
+        queueFile = SD.open(unsentName, FILE_WRITE);
+    }
+    if (!queueFile) {
+        Serial.println("Failed to open pending post queue: " + unsentName);
+        return false;
+    }
+
+    String message = "";
+    serializeJson(*jsonDoc, message);
+    queueFile.println(message);
+    queueFile.close();
+    unsentlogCreated = true;
+    appendEventLog("queue: enqueued payload");
+    return true;
+}
+
+bool processPendingPosts(size_t maxEntries) {
+    if (!sdcard || WiFi.status() != WL_CONNECTED) {
         return false;
     }
 
@@ -87,7 +121,7 @@ bool resendUnsentLogs(size_t maxEntries) {
 
     File inFile = SD.open(unsentName, FILE_READ);
     if (!inFile) {
-        Serial.println("Failed to open unsent log for reading.");
+        Serial.println("Failed to open pending queue for reading.");
         return false;
     }
 
@@ -96,16 +130,15 @@ bool resendUnsentLogs(size_t maxEntries) {
     File outFile = SD.open(tempName, FILE_WRITE);
     if (!outFile) {
         inFile.close();
-        Serial.println("Failed to open temp unsent log for writing.");
+        Serial.println("Failed to open pending temp queue for writing.");
         return false;
     }
 
     size_t sentCount = 0;
-    bool allSent = true;
+    bool allConfirmed = true;
     while (inFile.available()) {
         String line = inFile.readStringUntil('\n');
         line.trim();
-
         if (line.length() == 0 || line == "{" || line == "},") {
             continue;
         }
@@ -114,22 +147,24 @@ bool resendUnsentLogs(size_t maxEntries) {
         auto err = deserializeJson(doc, line);
         if (err) {
             outFile.println(line);
-            allSent = false;
+            allConfirmed = false;
             continue;
         }
 
         if (sentCount < maxEntries) {
             int postRes = sendPostMessage(&doc);
-            if (postRes == 0) {
+            if (postRes == 200) {
                 sentCount++;
+                appendEventLog("queue: confirmed payload");
                 continue;
             }
+            appendEventLog("queue: keep pending, post code=" + String(postRes));
         }
 
         String keepLine = "";
         serializeJson(doc, keepLine);
         outFile.println(keepLine);
-        allSent = false;
+        allConfirmed = false;
     }
 
     inFile.close();
@@ -145,12 +180,33 @@ bool resendUnsentLogs(size_t maxEntries) {
     if (remaining == 0) {
         SD.remove(tempName);
         unsentlogCreated = false;
-        Serial.println("Unsent queue drained.");
-        return allSent;
+        appendEventLog("queue: drained");
+        return allConfirmed;
     }
 
     SD.rename(tempName, unsentName);
     unsentlogCreated = true;
-    Serial.println("Unsent queue retained entries.");
     return false;
+}
+
+void appendEventLog(const String& message) {
+    if (!sdcard || message.length() == 0) {
+        return;
+    }
+
+    String logName = getEventsLogName();
+    rotateLogIfNeeded(logName);
+
+    File eventFile = SD.open(logName, FILE_APPEND);
+    if (!eventFile) {
+        eventFile = SD.open(logName, FILE_WRITE);
+    }
+
+    if (!eventFile) {
+        Serial.println("error opening events log " + logName);
+        return;
+    }
+
+    eventFile.println(message);
+    eventFile.close();
 }
