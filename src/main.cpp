@@ -567,13 +567,14 @@ static void logVisibleNetworksToStartupMonitor() {
 }
 
 static void waitForWifiDebugOrContinue() {
+    // Keep this pre-window stage bounded so the 15-second setup window can always run.
+    const unsigned long kPreWindowRetryMs = 5000UL;
+    const unsigned long kRetryIntervalMs = 2000UL;
+    unsigned long waitStart = millis();
     unsigned long lastRefreshMs = 0;
-    while (WiFi.status() != WL_CONNECTED) {
-        if (digitalRead(WIO_KEY_A) == LOW || digitalRead(WIO_KEY_B) == LOW) {
-            break;
-        }
 
-        if (lastRefreshMs == 0 || millis() - lastRefreshMs >= 4000) {
+    while (WiFi.status() != WL_CONNECTED && (millis() - waitStart) < kPreWindowRetryMs) {
+        if (lastRefreshMs == 0 || millis() - lastRefreshMs >= kRetryIntervalMs) {
             logStartupStatus("WiFi retry + scan...");
             if (ensureWiFiConnected()) {
                 logStartupStatus("Connected: " + WiFi.SSID());
@@ -585,14 +586,11 @@ static void waitForWifiDebugOrContinue() {
             logStartupStatus(getLastWiFiTargetSummary());
             logVisibleNetworksToStartupMonitor();
             logStartupStatus("WiFi status: " + wifiStatusToString(WiFi.status()));
-            logStartupStatus("Press A or B to continue");
             lastRefreshMs = millis();
         }
 
         delay(100);
     }
-
-    delay(150);
 }
 
 static void startupWiFiStatusSink(const String& message) {
@@ -782,19 +780,64 @@ void setup() {
     endStartupStatus();
     setWiFiStatusCallback(nullptr);
     {
+        // 15-second window: user may press A or B to stay on the setup screen.
+        // If neither is pressed the firmware auto-advances to the main page.
+        // While on the extended setup view background WiFi retries continue.
+        const unsigned long kSetupWindowMs = 15000UL;
         unsigned long waitStart = millis();
-        tft.setTextFont(2);
-        tft.setTextColor(TFT_WHITE, TFT_BLACK);
-        tft.drawString("Press A/B to continue (3s)", 6, 222);
-        while (digitalRead(WIO_KEY_A) != LOW && digitalRead(WIO_KEY_B) != LOW) {
-            if ((millis() - waitStart) >= 3000) {
+        unsigned long lastTickMs  = 0;
+        bool stayOnSetup = false;
+
+        while ((millis() - waitStart) < kSetupWindowMs) {
+            if (digitalRead(WIO_KEY_A) == LOW || digitalRead(WIO_KEY_B) == LOW) {
+                stayOnSetup = true;
+                delay(150);
                 break;
+            }
+            if (millis() - lastTickMs >= 1000UL) {
+                lastTickMs = millis();
+                unsigned long secsLeft = (kSetupWindowMs - (lastTickMs - waitStart) + 999UL) / 1000UL;
+                tft.fillRect(0, 220, 320, 20, TFT_BLACK);
+                tft.setTextFont(2);
+                tft.setTextColor(TFT_WHITE, TFT_BLACK);
+                tft.drawString("A/B: stay on setup  (" + String(secsLeft) + "s)", 6, 222);
             }
             delay(50);
         }
-        delay(150);
+
+        if (stayOnSetup) {
+            setWiFiStatusCallback(startupWiFiStatusSink);
+            logStartupStatus("Staying on setup -- press A or B to continue.");
+            unsigned long lastWifiRetryMs = 0;
+            while (true) {
+                if (digitalRead(WIO_KEY_A) == LOW || digitalRead(WIO_KEY_B) == LOW) {
+                    delay(150);
+                    break;
+                }
+                // Background WiFi retry every 5 s while not connected.
+                if (WiFi.status() != WL_CONNECTED &&
+                    (lastWifiRetryMs == 0 || millis() - lastWifiRetryMs >= 5000UL)) {
+                    lastWifiRetryMs = millis();
+                    logStartupStatus("WiFi retry...");
+                    if (ensureWiFiConnected()) {
+                        logStartupStatus("Connected: " + WiFi.SSID());
+                        logStartupStatus("IP: " + WiFi.localIP().toString());
+                        if (syncRtcFromNtp()) {
+                            sLastNtpSyncMs = millis();
+                            logStartupStatus("NTP sync ok");
+                        } else {
+                            logStartupStatus("NTP sync failed");
+                        }
+                    } else {
+                        logStartupStatus("WiFi not found. Press A or B when ready.");
+                    }
+                }
+                delay(100);
+            }
+            setWiFiStatusCallback(nullptr);
+        }
     }
-        renderActiveWindow();
+    renderActiveWindow();
     screenMillis = millis();
     lastRefreshMillis = screenMillis;
 }
