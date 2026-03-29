@@ -58,6 +58,8 @@ extern File LogFile;
 extern bool sdcard;
 extern bool syslogCreated;
 extern bool unsentlogCreated;
+extern unsigned long bleRenameUnlockUntilMs;
+extern unsigned long bleRenameUnlockWindowMs;
 
 extern const char* root_ca;
 

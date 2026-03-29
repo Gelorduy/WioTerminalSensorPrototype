@@ -28,6 +28,22 @@ static void drawWiFiIconSmall(int cx, int cy, bool connected) {
     spr.fillRect(cx - 9, cy + 1, 18, 8, bg);
 }
 
+static void drawBleUnlockBadge() {
+    bool bleUnlocked = millis() < bleRenameUnlockUntilMs;
+    if (!bleUnlocked) {
+        return;
+    }
+
+    const int badgeW = 48;
+    const int badgeH = 16;
+    const int badgeX = 320 - badgeW - 4;
+    const int badgeY = 240 - badgeH - 4;
+    spr.fillRoundRect(badgeX, badgeY, badgeW, badgeH, 4, TFT_GREEN);
+    spr.setTextColor(TFT_BLACK, TFT_GREEN);
+    spr.setTextFont(1);
+    spr.drawString("BLEU", badgeX + 6, badgeY + 4);
+}
+
 static String fitHeaderText(const String& text, size_t maxLen) {
     if (text.length() <= maxLen) {
         return text;
@@ -134,6 +150,7 @@ void sendMenuScreen(int selectedIndex) {
 
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
     spr.drawString("RIGHT from Main opens this menu", 8, 214);
+    drawBleUnlockBadge();
     spr.pushSprite(0, 0);
 }
 
@@ -160,6 +177,7 @@ void sendLogMenuScreen(int selectedIndex) {
 
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
     spr.drawString("Select which log to browse", 8, 214);
+    drawBleUnlockBadge();
     spr.pushSprite(0, 0);
 }
 
@@ -220,6 +238,7 @@ void sendLogViewerScreen(bool eventsLog, int scrollOffset) {
 
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
     spr.drawString("Offset: " + String(scrollOffset) + "  LEFT: menu", 8, 214);
+    drawBleUnlockBadge();
     spr.pushSprite(0, 0);
 }
 
@@ -246,7 +265,7 @@ static void logMainScreenSnapshot(const String& location,
 }
 
 void sendConfigScreen() {
-    drawWindowHeader("Config Window", "PRESS toggles ack verification");
+    drawWindowHeader("Config Window", "PRESS ack, UP/DOWN BLE window");
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.setTextFont(2);
     spr.drawString("Version:", 8, 66);
@@ -262,6 +281,20 @@ void sendConfigScreen() {
     spr.setTextColor(ackConfigured ? TFT_LIGHTGREY : TFT_ORANGE, TFT_BLACK);
     spr.drawString(ackConfigured ? "key configured" : "key missing", 168, 108);
 
+    bool bleRenameUnlocked = millis() < bleRenameUnlockUntilMs;
+    unsigned long bleSecondsLeft = bleRenameUnlocked ? ((bleRenameUnlockUntilMs - millis()) / 1000UL) : 0;
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("BLE Rename:", 168, 126);
+    spr.setTextColor(bleRenameUnlocked ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    spr.drawString(bleRenameUnlocked ? "UNLOCKED" : "LOCKED", 168, 146);
+    spr.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    if (bleRenameUnlocked) {
+        spr.drawString(String(bleSecondsLeft) + "s left", 168, 166);
+    } else {
+        spr.drawString("Press C unlock", 168, 166);
+    }
+    spr.drawString("Window: " + String(bleRenameUnlockWindowMs / 1000UL) + "s", 168, 184);
+
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.drawString("Current WiFi:", 8, 116);
     bool wifiConnected = WiFi.status() == WL_CONNECTED;
@@ -272,8 +305,10 @@ void sendConfigScreen() {
     spr.setTextColor(TFT_CYAN, TFT_BLACK);
     spr.drawString(wifiConnected ? fitHeaderText(WiFi.localIP().toString(), 30) : "no ip", 8, 186);
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    spr.drawString("PRESS: toggle ack verify", 8, 202);
+    spr.drawString("PRESS: toggle ack verify", 8, 198);
+    spr.drawString("UP/DOWN: BLE window 30/60/120s", 8, 208);
     spr.drawString("LEFT: Menu", 8, 218);
+    drawBleUnlockBadge();
     spr.pushSprite(0, 0);
 }
 
@@ -323,6 +358,8 @@ void sendToScreen() {
     String wifiIp = wifiConnected ? WiFi.localIP().toString() : "no ip";
     spr.drawString(wifiName, 28, 220);
     spr.drawString(fitHeaderText(wifiIp, 20), 28, 232);
+
+    drawBleUnlockBadge();
 
     spr.pushSprite(0, 0);
 

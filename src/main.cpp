@@ -87,6 +87,7 @@ unsigned long previousMillisC= millis();
 unsigned long screenMillis = 0;
 unsigned long lastRefreshMillis = 0;
 unsigned long wioKEYBMillis = 0;
+unsigned long wioKEYCMillis = 0;
 
 const unsigned long interval = 60000; // interval between scans 60 seconds
 const unsigned long screenInterval = 10000; // interval to keep screen display 10 seconds
@@ -148,6 +149,8 @@ bool sdcard = false;
 bool fwritten = false;
 bool syslogCreated = false;
 bool unsentlogCreated = false;
+unsigned long bleRenameUnlockUntilMs = 0;
+unsigned long bleRenameUnlockWindowMs = 120000;
 
 
 // RootCA Certificate
@@ -253,6 +256,34 @@ class MyServerCallbacks: public BLEServerCallbacks {
     }
 };
 
+static const unsigned long kBleRenameUnlockDebounceMs = 1000;
+
+static const unsigned long kBleUnlockPresetMs[] = {30000UL, 60000UL, 120000UL};
+
+static void cycleBleUnlockWindow(bool increase) {
+    size_t selectedIndex = 0;
+    for (size_t i = 0; i < (sizeof(kBleUnlockPresetMs) / sizeof(kBleUnlockPresetMs[0])); ++i) {
+        if (bleRenameUnlockWindowMs == kBleUnlockPresetMs[i]) {
+            selectedIndex = i;
+            break;
+        }
+    }
+
+    if (increase) {
+        selectedIndex = (selectedIndex + 1) % (sizeof(kBleUnlockPresetMs) / sizeof(kBleUnlockPresetMs[0]));
+    } else {
+        selectedIndex = (selectedIndex + (sizeof(kBleUnlockPresetMs) / sizeof(kBleUnlockPresetMs[0])) - 1) %
+                        (sizeof(kBleUnlockPresetMs) / sizeof(kBleUnlockPresetMs[0]));
+    }
+
+    bleRenameUnlockWindowMs = kBleUnlockPresetMs[selectedIndex];
+    appendEventLog("ble: unlock window set to " + String(bleRenameUnlockWindowMs / 1000UL) + "s");
+}
+
+static bool isBleRenameWriteUnlocked() {
+    return millis() < bleRenameUnlockUntilMs;
+}
+
 static String sanitizePlaceValue(const std::string& rawValue) {
     const size_t kMaxPlaceLen = 20;
     String cleaned = "";
@@ -275,9 +306,15 @@ static String sanitizePlaceValue(const std::string& rawValue) {
 class PlaceCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         Serial.println("onWrite triggered");
+        if (!isBleRenameWriteUnlocked()) {
+            appendEventLog("ble: rename rejected (locked)");
+            Serial.println("Rejected place update: BLE rename lock is active");
+            return;
+        }
         std::string placeValue = pCharacteristic->getValue();
         String safeValue = sanitizePlaceValue(placeValue);
         pCharacteristic->setValue(safeValue.c_str());
+        appendEventLog("ble: place updated=" + safeValue);
         Serial.print("Accepted place: ");
         Serial.println(safeValue);
     }
@@ -477,6 +514,20 @@ static void handleJoystickNavigation() {
         return;
     }
 
+    if (sUiWindow == UI_WINDOW_CONFIG && isJoystickPressed(WIO_5S_UP)) {
+        cycleBleUnlockWindow(false);
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_CONFIG && isJoystickPressed(WIO_5S_DOWN)) {
+        cycleBleUnlockWindow(true);
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
     if (sUiWindow == UI_WINDOW_CONFIG && isJoystickPressed(WIO_5S_PRESS)) {
         setAckValidationEnabled(!isAckValidationEnabled());
         renderActiveWindow();
@@ -626,6 +677,7 @@ void setup() {
 
     pinMode(WIO_KEY_A, INPUT_PULLUP);
     pinMode(WIO_KEY_B, INPUT_PULLUP);
+    pinMode(WIO_KEY_C, INPUT_PULLUP);
     pinMode(WIO_5S_UP, INPUT_PULLUP);
     pinMode(WIO_5S_DOWN, INPUT_PULLUP);
     pinMode(WIO_5S_LEFT, INPUT_PULLUP);
@@ -647,11 +699,12 @@ void setup() {
         PLACE_UUID,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ
     );
-    placeCharacteristic->setAccessPermissions(GATT_PERM_READ_ENCRYPTED_REQ | GATT_PERM_WRITE_ENCRYPTED_REQ);
+    // Keep permissions compatible with existing mobile app; writes are gated by local unlock window.
+    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
     pDescriptor = placeCharacteristic->createDescriptor(
         DESCRIPTOR_UUID,
         ATTRIB_FLAG_ASCII_Z,
-        GATT_PERM_READ_ENCRYPTED_REQ | GATT_PERM_WRITE_ENCRYPTED_REQ,
+        GATT_PERM_READ | GATT_PERM_WRITE,
         21
     );
     pDescriptor->setValue("Place in House");
@@ -749,6 +802,15 @@ void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
         handleJoystickNavigation();
+
+    if (digitalRead(WIO_KEY_C) == LOW && (currentMillis - wioKEYCMillis) > kBleRenameUnlockDebounceMs) {
+        wioKEYCMillis = currentMillis;
+        bleRenameUnlockUntilMs = currentMillis + bleRenameUnlockWindowMs;
+        appendEventLog("ble: rename unlocked via C for " + String(bleRenameUnlockWindowMs / 1000UL) + "s");
+        if (sUiWindow == UI_WINDOW_CONFIG) {
+            renderActiveWindow();
+        }
+    }
 
     if (WiFi.status() != WL_CONNECTED) {
         // Keep reconnection attempts independent from display refresh cadence.
