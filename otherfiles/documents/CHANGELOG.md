@@ -4,6 +4,24 @@
 
 ### Added
 
+- Signed ACK verification support via `X-Ack-Signature` (HMAC-SHA256 over payload)
+- Runtime ACK verification toggle in Config window (default ON)
+- BLE rename unlock workflow with configurable unlock windows (`30s`, `60s`, `120s`)
+- `BLEU` bottom-right indicator while BLE rename is unlocked
+- User manual at `otherfiles/documents/USER_MANUAL.md`
+
+### Changed
+
+- BLE rename unlock moved to top button `C` to reduce control lag and simplify operation
+- BLE rename writes now require local unlock window and sanitized input
+- Config window expanded with security and BLE status details
+
+### Notes
+
+- Signed ACK verification requires `API_ACK_HMAC_KEY` and server header `X-Ack-Signature`.
+
+### Added
+
 - Joystick-driven window navigation (`Main`, `Menu`, `Log Menu`, `Log Viewer`, `Config`)
 - Split log browsing for temperature readings and events, with page scrolling
 - SD-backed events log stream for startup, network, queue, NTP, and upload diagnostics
