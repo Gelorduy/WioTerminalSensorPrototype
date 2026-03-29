@@ -16,6 +16,9 @@ void setWiFiStatusCallback(WiFiStatusCallback callback);
 String getLastWiFiFailureReason();
 String getLastWiFiTargetSummary();
 String wifiStatusToString(int status);
+void setAckValidationEnabled(bool enabled);
+bool isAckValidationEnabled();
+bool isAckValidationConfigured();
 int sendPostMessage(DynamicJsonDocument* document);
 
 #endif

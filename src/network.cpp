@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <rpcWiFi.h>
 #include <HTTPClient.h>
+#include <mbedtls/md.h>
 #include "storage.h"
 
 #if __has_include("secrets_local.h")
@@ -11,11 +12,16 @@
 #include "secrets_template.h"
 #endif
 
+#ifndef API_ACK_HMAC_KEY
+#define API_ACK_HMAC_KEY ""
+#endif
+
 #include "app_state.h"
 
 #define SERVERURL API_SERVER_URL
 #define K 27.55
 #define BEARERTOKEN API_BEARER_TOKEN
+#define ACK_HMAC_KEY API_ACK_HMAC_KEY
 
 static const int kNtpPacketSize = 48;
 static const unsigned long kNtpResponseTimeoutMs = 1500;
@@ -23,6 +29,15 @@ static const unsigned long kWifiInitialBackoffMs = 1000;
 static const unsigned long kWifiMaxBackoffMs = 60000;
 static const unsigned long kWifiConnectWindowMs = 10000;
 static const unsigned long kWifiRescanIntervalMs = 15000;
+static const size_t kMaxTrustedResponseBytes = 512;
+static const char* kAckSignatureHeader = "X-Ack-Signature";
+
+static bool isHttpsUrl(const char* url) {
+    if (url == nullptr) {
+        return false;
+    }
+    return strncmp(url, "https://", 8) == 0;
+}
 
 static unsigned long sLastWifiAttemptMs = 0;
 static unsigned long sWifiBackoffMs = kWifiInitialBackoffMs;
@@ -43,6 +58,80 @@ static String sPrimaryTargetInfo = "";
 static String sAlternateTargetInfo = "";
 static String sMobileTargetInfo = "";
 static unsigned long sLastScanMs = 0;
+static bool sAckValidationEnabled = true;
+
+static bool constantTimeEquals(const String& a, const String& b) {
+    if (a.length() != b.length()) {
+        return false;
+    }
+
+    unsigned char diff = 0;
+    for (size_t i = 0; i < a.length(); ++i) {
+        diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+static String toLowerHex(const String& value) {
+    String lowered = value;
+    lowered.toLowerCase();
+    return lowered;
+}
+
+static String hmacSha256Hex(const String& payload, const char* key) {
+    if (key == nullptr || strlen(key) == 0) {
+        return "";
+    }
+
+    const mbedtls_md_info_t* mdInfo = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    if (mdInfo == nullptr) {
+        return "";
+    }
+
+    mbedtls_md_context_t ctx;
+    mbedtls_md_init(&ctx);
+    unsigned char digest[32] = {0};
+    int rc = mbedtls_md_setup(&ctx, mdInfo, 1);
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_starts(&ctx,
+                                    reinterpret_cast<const unsigned char*>(key),
+                                    strlen(key));
+    }
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_update(&ctx,
+                                    reinterpret_cast<const unsigned char*>(payload.c_str()),
+                                    payload.length());
+    }
+    if (rc == 0) {
+        rc = mbedtls_md_hmac_finish(&ctx, digest);
+    }
+    mbedtls_md_free(&ctx);
+    if (rc != 0) {
+        return "";
+    }
+
+    String hex = "";
+    hex.reserve(64);
+    static const char kHexMap[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof(digest); ++i) {
+        hex += kHexMap[(digest[i] >> 4) & 0x0F];
+        hex += kHexMap[digest[i] & 0x0F];
+    }
+    return hex;
+}
+
+void setAckValidationEnabled(bool enabled) {
+    sAckValidationEnabled = enabled;
+    appendEventLog(String("security: ack validation ") + (enabled ? "enabled" : "disabled"));
+}
+
+bool isAckValidationEnabled() {
+    return sAckValidationEnabled;
+}
+
+bool isAckValidationConfigured() {
+    return ACK_HMAC_KEY != nullptr && strlen(ACK_HMAC_KEY) >= 16;
+}
 
 static void reportWiFiStatus(const String& message) {
     Serial.println(message);
@@ -465,20 +554,30 @@ bool ensureWiFiConnected() {
 
 int sendPostMessage(DynamicJsonDocument* document) {
     if (WiFi.status() == WL_CONNECTED) {
+        if (!isHttpsUrl(SERVERURL)) {
+            appendEventLog("https: rejected non-https server url");
+            return -2;
+        }
+
         String message = "";
         serializeJson(*document, message);
 
         HTTPClient http;
         http.setReuse(false);
         http.setTimeout(700);
+        const char* headerKeys[] = {kAckSignatureHeader};
+        http.collectHeaders(headerKeys, 1);
         Serial.println("Begin Connection...");
         appendEventLog("https: begin upload to " + String(SERVERURL));
-        int svrResponse = http.begin(SERVERURL, root_ca);
+        int beginCode = http.begin(SERVERURL, root_ca);
         Serial.println("Begin response:");
-        Serial.println(svrResponse);
-        if (svrResponse != 1) {
-            appendEventLog("https: begin failed code=" + String(svrResponse));
+        Serial.println(beginCode);
+        if (beginCode != 1) {
+            appendEventLog("https: begin failed code=" + String(beginCode));
+            http.end();
+            return -3;
         }
+
         http.addHeader("Content-Type", "application/json; charset=utf-8");
         http.addHeader("Authorization", "Bearer " + String(BEARERTOKEN));
 
@@ -488,9 +587,39 @@ int sendPostMessage(DynamicJsonDocument* document) {
 
         Serial.println("Response Code: " + String(httpResponseCode));
         if (httpResponseCode == 200) {
-            String response = http.getString();
-            Serial.println(httpResponseCode);
-            Serial.println(response);
+            if (sAckValidationEnabled) {
+                if (!isAckValidationConfigured()) {
+                    appendEventLog("security: ack validation enabled but key missing");
+                    http.end();
+                    return -7;
+                }
+
+                String receivedSignature = toLowerHex(http.header(kAckSignatureHeader));
+                if (receivedSignature.length() == 0) {
+                    appendEventLog("security: missing ack signature header");
+                    http.end();
+                    return -8;
+                }
+
+                String expectedSignature = hmacSha256Hex(message, ACK_HMAC_KEY);
+                if (expectedSignature.length() == 0) {
+                    appendEventLog("security: failed to compute ack signature");
+                    http.end();
+                    return -9;
+                }
+
+                if (!constantTimeEquals(receivedSignature, expectedSignature)) {
+                    appendEventLog("security: invalid ack signature");
+                    http.end();
+                    return -10;
+                }
+            }
+
+            int responseLength = http.getSize();
+            if (responseLength > static_cast<int>(kMaxTrustedResponseBytes)) {
+                appendEventLog("https: large response ignored len=" + String(responseLength));
+            }
+            // Do not parse or execute response body; this endpoint is treated as acknowledgement-only.
             appendEventLog("https: upload success code=" + String(httpResponseCode));
         } else {
             Serial.print("Error on sending Information to Server: ");

@@ -30,6 +30,7 @@
 #include "display.h"
 #include "sensors.h"
 #include "storage.h"
+#include <ctype.h>
 
 #include <rpcBLEDevice.h>
 // #include <BLEServer.h>
@@ -252,13 +253,33 @@ class MyServerCallbacks: public BLEServerCallbacks {
     }
 };
 
+static String sanitizePlaceValue(const std::string& rawValue) {
+    const size_t kMaxPlaceLen = 20;
+    String cleaned = "";
+    cleaned.reserve(kMaxPlaceLen);
+
+    for (size_t i = 0; i < rawValue.length() && cleaned.length() < kMaxPlaceLen; ++i) {
+        unsigned char ch = static_cast<unsigned char>(rawValue[i]);
+        if (isalnum(ch) || ch == ' ' || ch == '_' || ch == '-') {
+            cleaned += static_cast<char>(ch);
+        }
+    }
+
+    cleaned.trim();
+    if (cleaned.length() == 0) {
+        return "Anywhere";
+    }
+    return cleaned;
+}
+
 class PlaceCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         Serial.println("onWrite triggered");
         std::string placeValue = pCharacteristic->getValue();
-        Serial.print("Received: ");
-        Serial.println(String(placeValue.c_str()));
-        // pCharacteristic->setValue(placeValue);
+        String safeValue = sanitizePlaceValue(placeValue);
+        pCharacteristic->setValue(safeValue.c_str());
+        Serial.print("Accepted place: ");
+        Serial.println(safeValue);
     }
     // void onRead(BLECharacteristic *pCharacteristic){
     //     Serial.println("aPlace");
@@ -453,6 +474,13 @@ static void handleJoystickNavigation() {
         sLogScrollOffset += kLogPageSize;
         renderActiveWindow();
         sJoystickLocked = true;
+        return;
+    }
+
+    if (sUiWindow == UI_WINDOW_CONFIG && isJoystickPressed(WIO_5S_PRESS)) {
+        setAckValidationEnabled(!isAckValidationEnabled());
+        renderActiveWindow();
+        sJoystickLocked = true;
     }
 }
 
@@ -619,11 +647,11 @@ void setup() {
         PLACE_UUID,
         BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ
     );
-    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
+    placeCharacteristic->setAccessPermissions(GATT_PERM_READ_ENCRYPTED_REQ | GATT_PERM_WRITE_ENCRYPTED_REQ);
     pDescriptor = placeCharacteristic->createDescriptor(
         DESCRIPTOR_UUID,
         ATTRIB_FLAG_ASCII_Z,
-        GATT_PERM_READ | GATT_PERM_WRITE,
+        GATT_PERM_READ_ENCRYPTED_REQ | GATT_PERM_WRITE_ENCRYPTED_REQ,
         21
     );
     pDescriptor->setValue("Place in House");

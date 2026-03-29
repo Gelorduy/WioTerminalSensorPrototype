@@ -10,6 +10,10 @@
 
 #define TFT_PROCOMSABLUE 0x2A51
 
+#ifndef APP_VERSION
+#define APP_VERSION "dev"
+#endif
+
 // Smaller WiFi icon for bottom of screen
 static void drawWiFiIconSmall(int cx, int cy, bool connected) {
     uint16_t color = connected ? TFT_GREEN : TFT_RED;
@@ -242,19 +246,34 @@ static void logMainScreenSnapshot(const String& location,
 }
 
 void sendConfigScreen() {
-    drawWindowHeader("Config Window", "Placeholder - config options coming next");
+    drawWindowHeader("Config Window", "PRESS toggles ack verification");
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.setTextFont(2);
-    spr.drawString("Current WiFi:", 8, 88);
+    spr.drawString("Version:", 8, 66);
+    spr.setTextColor(TFT_YELLOW, TFT_BLACK);
+    spr.drawString(String(APP_VERSION), 8, 88);
+
+    bool ackEnabled = isAckValidationEnabled();
+    bool ackConfigured = isAckValidationConfigured();
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("Ack Verify:", 168, 66);
+    spr.setTextColor(ackEnabled ? TFT_GREEN : TFT_RED, TFT_BLACK);
+    spr.drawString(ackEnabled ? "ON" : "OFF", 168, 88);
+    spr.setTextColor(ackConfigured ? TFT_LIGHTGREY : TFT_ORANGE, TFT_BLACK);
+    spr.drawString(ackConfigured ? "key configured" : "key missing", 168, 108);
+
+    spr.setTextColor(TFT_WHITE, TFT_BLACK);
+    spr.drawString("Current WiFi:", 8, 116);
     bool wifiConnected = WiFi.status() == WL_CONNECTED;
     spr.setTextColor(wifiConnected ? TFT_GREEN : TFT_RED, TFT_BLACK);
-    spr.drawString(wifiConnected ? fitHeaderText(WiFi.SSID(), 30) : "offline", 8, 110);
+    spr.drawString(wifiConnected ? fitHeaderText(WiFi.SSID(), 30) : "offline", 8, 138);
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
-    spr.drawString("IP:", 8, 146);
+    spr.drawString("IP:", 8, 164);
     spr.setTextColor(TFT_CYAN, TFT_BLACK);
-    spr.drawString(wifiConnected ? fitHeaderText(WiFi.localIP().toString(), 30) : "no ip", 8, 168);
+    spr.drawString(wifiConnected ? fitHeaderText(WiFi.localIP().toString(), 30) : "no ip", 8, 186);
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    spr.drawString("LEFT: Menu", 8, 214);
+    spr.drawString("PRESS: toggle ack verify", 8, 202);
+    spr.drawString("LEFT: Menu", 8, 218);
     spr.pushSprite(0, 0);
 }
 
