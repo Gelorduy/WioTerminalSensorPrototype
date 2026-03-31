@@ -564,7 +564,8 @@ int sendPostMessage(DynamicJsonDocument* document) {
 
         HTTPClient http;
         http.setReuse(false);
-        http.setTimeout(700);
+        http.setConnectTimeout(2000);  // Connection timeout: 2s
+        http.setTimeout(3000);          // Overall timeout: 3s
         const char* headerKeys[] = {kAckSignatureHeader};
         http.collectHeaders(headerKeys, 1);
         Serial.println("Begin Connection...");
@@ -582,9 +583,26 @@ int sendPostMessage(DynamicJsonDocument* document) {
         http.addHeader("Authorization", "Bearer " + String(BEARERTOKEN));
 
         Serial.println("Sending Post message...");
-        int httpResponseCode = http.POST(message);
+        unsigned long postStartMs = millis();
+        const unsigned long kPostTimeoutMs = 5000;  // 5-second watchdog for POST itself
+        int httpResponseCode = -1;
+        
+        // Attempt POST with watchdog timeout
+        while ((millis() - postStartMs) < kPostTimeoutMs && httpResponseCode == -1) {
+            httpResponseCode = http.POST(message);
+            if (httpResponseCode == -1) {
+                delay(50);
+            }
+        }
+        
+        if (httpResponseCode == -1) {
+            Serial.println("POST timeout or error");
+            appendEventLog("https: POST timeout after " + String(millis() - postStartMs) + "ms");
+            http.end();
+            return -4;
+        }
+        
         Serial.println("Post Message Sent and received response...");
-
         Serial.println("Response Code: " + String(httpResponseCode));
         if (httpResponseCode == 200) {
             if (sAckValidationEnabled) {
