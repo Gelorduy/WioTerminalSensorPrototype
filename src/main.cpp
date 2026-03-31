@@ -669,31 +669,36 @@ void setup() {
 
     Wire.begin();
     termosensor = false;
-    logStartupStatus("SHT40 disabled (temporary)");
+    termosensor35 = false;
 
-    if (sensor35.init() == NO_ERROR) {
-        logStartupStatus("SHT35 init ok");
-        // Retry up to 5 times — sensor may need time after Wire.begin()
-        for (int attempt = 1; attempt <= 5; attempt++) {
-            delay(100);
-            error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
-            Serial.print("SHT35 read attempt " + String(attempt) + " error=");
-            Serial.println(error);
-            if (error == NO_ERROR) {
-                termosensor35 = true;
-                logStartupStatus("SHT35 ready (attempt " + String(attempt) + ")");
-                break;
-            }
-        }
-        if (!termosensor35) {
-            logStartupStatus("SHT35 read failed after 5 attempts");
-            Serial.print("SHT35 last error code: ");
-            Serial.println(error);
-        }
+    // --- Auto-detect sensor: try SHT40 first, fall back to SHT35 ---
+    sensor.begin(Wire, SHT40_I2C_ADDR_44);
+    delay(10);
+    error = sensor.measureHighPrecision(aTemperature, aHumidity);
+    if (error == NO_ERROR) {
+        termosensor = true;
+        logStartupStatus("SHT40 detected and ready");
     } else {
-        termosensor35 = false;
-        logStartupStatus("SHT35 init failed");
-        Serial.println("SHT35 init error");
+        logStartupStatus("SHT40 not found, trying SHT35...");
+        if (sensor35.init() == NO_ERROR) {
+            logStartupStatus("SHT35 init ok");
+            for (int attempt = 1; attempt <= 5; attempt++) {
+                delay(100);
+                error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
+                Serial.print("SHT35 read attempt " + String(attempt) + " error=");
+                Serial.println(error);
+                if (error == NO_ERROR) {
+                    termosensor35 = true;
+                    logStartupStatus("SHT35 ready (attempt " + String(attempt) + ")");
+                    break;
+                }
+            }
+            if (!termosensor35) {
+                logStartupStatus("SHT35 read failed after 5 attempts");
+            }
+        } else {
+            logStartupStatus("SHT35 init failed — no sensor found");
+        }
     }
 
     if (!rtc.begin()) {
@@ -802,7 +807,9 @@ void setup() {
     previousMillis = currentMillis - interval;
 
     DynamicJsonDocument bootEnvData(4096);
-    if (termosensor35) {
+    if (termosensor) {
+        getEnvironmentData(&bootEnvData, 40);
+    } else if (termosensor35) {
         getEnvironmentData(&bootEnvData, 35);
     }
     light = analogRead(WIO_LIGHT);
@@ -909,12 +916,17 @@ void loop() {
         previousMillis = currentMillis; // update the last blink time
         
         // Get Environment Data
-        // If SHT35 failed in setup, try to recover it once per cycle
-        if (!termosensor35) {
-            Serial.println("SHT35 not active — attempting recovery...");
-            if (sensor35.init() == NO_ERROR) {
+        // If no sensor is active, attempt recovery for both types
+        if (!termosensor && !termosensor35) {
+            // Try SHT40 first
+            sensor.begin(Wire, SHT40_I2C_ADDR_44);
+            delay(10);
+            error = sensor.measureHighPrecision(aTemperature, aHumidity);
+            if (error == NO_ERROR) {
+                termosensor = true;
+                Serial.println("SHT40 recovered ok");
+            } else if (sensor35.init() == NO_ERROR) {
                 error = sensor35.read_meas_data_single_shot(HIGH_REP_WITH_STRCH, &aTemperature, &aHumidity);
-                Serial.print("SHT35 recovery read error="); Serial.println(error);
                 if (error == NO_ERROR) {
                     termosensor35 = true;
                     Serial.println("SHT35 recovered ok");
