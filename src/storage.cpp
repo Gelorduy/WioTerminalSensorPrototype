@@ -134,6 +134,8 @@ bool processPendingPosts(size_t maxEntries) {
         return false;
     }
 
+    const unsigned long kQueueProcessBudgetMs = 250UL;
+    const unsigned long processStartMs = millis();
     size_t sentCount = 0;
     bool allConfirmed = true;
     while (inFile.available()) {
@@ -143,28 +145,41 @@ bool processPendingPosts(size_t maxEntries) {
             continue;
         }
 
+        bool budgetExceeded = (millis() - processStartMs) >= kQueueProcessBudgetMs;
+        if (sentCount >= maxEntries || budgetExceeded) {
+            // Keep untouched lines as-is to avoid expensive parse/serialize work.
+            outFile.println(line);
+            allConfirmed = false;
+            if (budgetExceeded) {
+                appendEventLog("queue: paused by time budget");
+            }
+            yield();
+            continue;
+        }
+
         DynamicJsonDocument doc(4096);
         auto err = deserializeJson(doc, line);
         if (err) {
             outFile.println(line);
             allConfirmed = false;
+            yield();
             continue;
         }
 
-        if (sentCount < maxEntries) {
-            int postRes = sendPostMessage(&doc);
-            if (postRes == 200) {
-                sentCount++;
-                appendEventLog("queue: confirmed payload");
-                continue;
-            }
-            appendEventLog("queue: keep pending, post code=" + String(postRes));
+        int postRes = sendPostMessage(&doc);
+        if (postRes == 200) {
+            sentCount++;
+            appendEventLog("queue: confirmed payload");
+            yield();
+            continue;
         }
+        appendEventLog("queue: keep pending, post code=" + String(postRes));
 
         String keepLine = "";
         serializeJson(doc, keepLine);
         outFile.println(keepLine);
         allConfirmed = false;
+        yield();
     }
 
     inFile.close();

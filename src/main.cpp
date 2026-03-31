@@ -257,6 +257,8 @@ class MyServerCallbacks: public BLEServerCallbacks {
 };
 
 static const unsigned long kBleRenameUnlockDebounceMs = 1000;
+static volatile bool sBlePlaceWritePending = false;
+static char sBlePendingPlaceValue[21] = "Anywhere";
 
 static const unsigned long kBleUnlockPresetMs[] = {30000UL, 60000UL, 120000UL};
 
@@ -303,20 +305,46 @@ static String sanitizePlaceValue(const std::string& rawValue) {
     return cleaned;
 }
 
+static void queueBlePlaceUpdate(const String& value) {
+    char tmp[21] = {0};
+    value.toCharArray(tmp, sizeof(tmp));
+
+    noInterrupts();
+    memcpy(sBlePendingPlaceValue, tmp, sizeof(sBlePendingPlaceValue));
+    sBlePlaceWritePending = true;
+    interrupts();
+}
+
+static void processBlePlaceUpdateIfPending() {
+    if (!sBlePlaceWritePending) {
+        return;
+    }
+
+    char value[21] = {0};
+    noInterrupts();
+    memcpy(value, sBlePendingPlaceValue, sizeof(value));
+    sBlePlaceWritePending = false;
+    interrupts();
+
+    if (placeCharacteristic != nullptr) {
+        placeCharacteristic->setValue(value);
+    }
+    appendEventLog("ble: place updated=" + String(value));
+    Serial.print("Accepted place: ");
+    Serial.println(value);
+}
+
 class PlaceCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
         Serial.println("onWrite triggered");
         if (!isBleRenameWriteUnlocked()) {
-            appendEventLog("ble: rename rejected (locked)");
             Serial.println("Rejected place update: BLE rename lock is active");
             return;
         }
         std::string placeValue = pCharacteristic->getValue();
         String safeValue = sanitizePlaceValue(placeValue);
-        pCharacteristic->setValue(safeValue.c_str());
-        appendEventLog("ble: place updated=" + safeValue);
-        Serial.print("Accepted place: ");
-        Serial.println(safeValue);
+        queueBlePlaceUpdate(safeValue);
+        Serial.println("Accepted place update queued");
     }
     // void onRead(BLECharacteristic *pCharacteristic){
     //     Serial.println("aPlace");
@@ -381,6 +409,8 @@ static unsigned long sLastNtpSyncMs = 0;
 static const unsigned long kNtpResyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
 static unsigned long sLastPostProcessMs = 0;
 static const unsigned long kPostProcessIntervalMs = 15000;
+static unsigned long sLastWifiMaintainMs = 0;
+static const unsigned long kWifiMaintainIntervalMs = 1000;
 
 static bool isUserInteracting() {
     return digitalRead(WIO_KEY_A) == LOW ||
@@ -844,6 +874,7 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
+        processBlePlaceUpdateIfPending();
         handleJoystickNavigation();
 
     if (digitalRead(WIO_KEY_C) == LOW && (currentMillis - wioKEYCMillis) > kBleRenameUnlockDebounceMs) {
@@ -855,9 +886,11 @@ void loop() {
         }
     }
 
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED &&
+        (sLastWifiMaintainMs == 0 || (currentMillis - sLastWifiMaintainMs) >= kWifiMaintainIntervalMs)) {
         // Keep reconnection attempts independent from display refresh cadence.
         ensureWiFiConnected();
+        sLastWifiMaintainMs = currentMillis;
     }
 
     if (digitalRead(WIO_KEY_A) == LOW) {
