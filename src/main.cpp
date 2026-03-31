@@ -155,7 +155,7 @@ bool sdResetConfirmPending = false;
 unsigned long sdResetConfirmUntilMs = 0;
 bool sdResetLastSuccess = false;
 unsigned long sdResetStatusUntilMs = 0;
-unsigned long bleRenameUnlockUntilMs = 0;
+volatile unsigned long bleRenameUnlockUntilMs = 0;
 unsigned long bleRenameUnlockWindowMs = 120000;
 
 
@@ -289,7 +289,8 @@ static void cycleBleUnlockWindow(bool increase) {
 }
 
 static bool isBleRenameWriteUnlocked() {
-    return millis() < bleRenameUnlockUntilMs;
+    unsigned long unlockUntil = bleRenameUnlockUntilMs; // snapshot volatile once
+    return millis() < unlockUntil;
 }
 
 static String sanitizePlaceValue(const std::string& rawValue) {
