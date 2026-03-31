@@ -149,6 +149,10 @@ bool sdcard = false;
 bool fwritten = false;
 bool syslogCreated = false;
 bool unsentlogCreated = false;
+bool sdResetConfirmPending = false;
+unsigned long sdResetConfirmUntilMs = 0;
+bool sdResetLastSuccess = false;
+unsigned long sdResetStatusUntilMs = 0;
 unsigned long bleRenameUnlockUntilMs = 0;
 unsigned long bleRenameUnlockWindowMs = 120000;
 
@@ -412,6 +416,8 @@ static unsigned long sLastPostProcessMs = 0;
 static const unsigned long kPostProcessIntervalMs = 15000;
 static unsigned long sLastWifiMaintainMs = 0;
 static const unsigned long kWifiMaintainIntervalMs = 1000;
+static const unsigned long kSdResetConfirmWindowMs = 5000;
+static const unsigned long kSdResetStatusShowMs = 4000;
 
 static bool isUserInteracting() {
     return digitalRead(WIO_KEY_A) == LOW ||
@@ -460,6 +466,9 @@ static void handleJoystickNavigation() {
     if (isJoystickPressed(WIO_5S_RIGHT)) {
         if (sUiWindow == UI_WINDOW_MAIN) {
             sUiWindow = UI_WINDOW_MENU;
+            renderActiveWindow();
+        } else if (sUiWindow == UI_WINDOW_CONFIG) {
+            setAckValidationEnabled(!isAckValidationEnabled());
             renderActiveWindow();
         }
         sJoystickLocked = true;
@@ -560,9 +569,23 @@ static void handleJoystickNavigation() {
     }
 
     if (sUiWindow == UI_WINDOW_CONFIG && isJoystickPressed(WIO_5S_PRESS)) {
-        setAckValidationEnabled(!isAckValidationEnabled());
+        if (sdResetConfirmPending && millis() <= sdResetConfirmUntilMs) {
+            bool resetOk = reinitializeSdCardFiles();
+            sdResetConfirmPending = false;
+            sdResetLastSuccess = resetOk;
+            sdResetStatusUntilMs = millis() + kSdResetStatusShowMs;
+            if (resetOk) {
+                appendEventLog("config: SD files reset");
+            } else {
+                appendEventLog("config: SD reset failed");
+            }
+        } else {
+            sdResetConfirmPending = true;
+            sdResetConfirmUntilMs = millis() + kSdResetConfirmWindowMs;
+        }
         renderActiveWindow();
         sJoystickLocked = true;
+        return;
     }
 }
 
@@ -885,6 +908,12 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
+        if (sdResetConfirmPending && currentMillis > sdResetConfirmUntilMs) {
+            sdResetConfirmPending = false;
+            if (sUiWindow == UI_WINDOW_CONFIG) {
+                renderActiveWindow();
+            }
+        }
         processBlePlaceUpdateIfPending();
         handleJoystickNavigation();
 

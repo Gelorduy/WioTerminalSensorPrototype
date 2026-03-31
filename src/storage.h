@@ -10,5 +10,6 @@ bool processPendingPosts(size_t maxEntries = 1);
 void appendEventLog(const String& message);
 void saveBlePlaceName(const String& name);
 String loadBlePlaceName();
+bool reinitializeSdCardFiles();
 
 #endif

@@ -284,3 +284,39 @@ String loadBlePlaceName() {
     Serial.println("Loaded BLE place name: " + name);
     return name;
 }
+
+bool reinitializeSdCardFiles() {
+    if (!sdcard) {
+        Serial.println("SD reinit skipped: card unavailable");
+        return false;
+    }
+
+    bool ok = true;
+    const String sn = String(serialNumber);
+    const String filesToDelete[] = {
+        "readings" + sn + ".log",
+        "readings" + sn + ".log.bak",
+        "unsent" + sn + ".log",
+        "unsent" + sn + ".log.bak",
+        "unsent" + sn + ".log.tmp",
+        "events" + sn + ".log",
+        "events" + sn + ".log.bak",
+        "ble_place_" + sn + ".txt"
+    };
+
+    for (size_t i = 0; i < (sizeof(filesToDelete) / sizeof(filesToDelete[0])); ++i) {
+        const String& fileName = filesToDelete[i];
+        if (!SD.exists(fileName)) {
+            continue;
+        }
+        if (!SD.remove(fileName)) {
+            Serial.println("SD reinit failed removing: " + fileName);
+            ok = false;
+        }
+    }
+
+    syslogCreated = SD.exists("readings" + sn + ".log");
+    unsentlogCreated = SD.exists("unsent" + sn + ".log");
+    Serial.println(ok ? "SD reinit complete" : "SD reinit partial failure");
+    return ok;
+}

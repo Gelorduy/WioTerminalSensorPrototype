@@ -265,7 +265,7 @@ static void logMainScreenSnapshot(const String& location,
 }
 
 void sendConfigScreen() {
-    drawWindowHeader("Config Window", "PRESS ack, UP/DOWN BLE window");
+    drawWindowHeader("Config Window", "RIGHT ack, PRESS SD reset");
     spr.setTextColor(TFT_WHITE, TFT_BLACK);
     spr.setTextFont(2);
     spr.drawString("Version:", 8, 66);
@@ -305,9 +305,21 @@ void sendConfigScreen() {
     spr.setTextColor(TFT_CYAN, TFT_BLACK);
     spr.drawString(wifiConnected ? fitHeaderText(WiFi.localIP().toString(), 30) : "no ip", 8, 186);
     spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    spr.drawString("PRESS: toggle ack verify", 8, 198);
-    spr.drawString("UP/DOWN: BLE window 30/60/120s", 8, 208);
-    spr.drawString("LEFT: Menu", 8, 218);
+    bool sdConfirmActive = sdResetConfirmPending && millis() <= sdResetConfirmUntilMs;
+    unsigned long sdConfirmLeft = sdConfirmActive ? ((sdResetConfirmUntilMs - millis()) / 1000UL) : 0;
+    spr.setTextColor(sdConfirmActive ? TFT_ORANGE : TFT_DARKGREY, TFT_BLACK);
+    if (sdConfirmActive) {
+        spr.drawString("PRESS again: confirm SD reset (" + String(sdConfirmLeft) + "s)", 8, 198);
+    } else {
+        spr.drawString("PRESS: arm SD reset (2-click)", 8, 198);
+    }
+
+    bool showSdStatus = millis() <= sdResetStatusUntilMs;
+    spr.setTextColor(showSdStatus ? (sdResetLastSuccess ? TFT_GREEN : TFT_RED) : TFT_DARKGREY, TFT_BLACK);
+    spr.drawString(showSdStatus ? (sdResetLastSuccess ? "SD reset done" : "SD reset failed") : "RIGHT: toggle ack verify", 8, 208);
+    spr.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    spr.drawString("UP/DOWN: BLE window 30/60/120s", 8, 218);
+    spr.drawString("LEFT: Menu", 8, 228);
     drawBleUnlockBadge();
     spr.pushSprite(0, 0);
 }

@@ -58,6 +58,10 @@ extern File LogFile;
 extern bool sdcard;
 extern bool syslogCreated;
 extern bool unsentlogCreated;
+extern bool sdResetConfirmPending;
+extern unsigned long sdResetConfirmUntilMs;
+extern bool sdResetLastSuccess;
+extern unsigned long sdResetStatusUntilMs;
 extern unsigned long bleRenameUnlockUntilMs;
 extern unsigned long bleRenameUnlockWindowMs;
 
