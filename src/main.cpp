@@ -90,6 +90,7 @@ unsigned long screenMillis = 0;
 unsigned long lastRefreshMillis = 0;
 unsigned long wioKEYBMillis = 0;
 unsigned long wioKEYCMillis = 0;
+static volatile bool sBleClientConnected = false;
 
 const unsigned long interval = 60000; // interval between scans 60 seconds
 const unsigned long screenInterval = 10000; // interval to keep screen display 10 seconds
@@ -157,6 +158,8 @@ bool sdResetLastSuccess = false;
 unsigned long sdResetStatusUntilMs = 0;
 volatile unsigned long bleRenameUnlockUntilMs = 0;
 unsigned long bleRenameUnlockWindowMs = 120000;
+// Simple bool flag read by BLE callback — avoids calling millis() in BLE task context.
+volatile bool sBleRenameUnlockedFlag = false;
 
 
 // RootCA Certificate
@@ -244,6 +247,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
     //   spr.setTextColor(TFT_GREEN, TFT_BLACK);
     //   spr.drawString("status: connected",10 ,5); 
     //   spr.pushSprite(0, 0);
+        sBleClientConnected = true;
         Serial.println("devConnected");
     };
  
@@ -258,6 +262,7 @@ class MyServerCallbacks: public BLEServerCallbacks {
     //   spr.setTextColor(TFT_RED, TFT_BLACK);
     //   spr.drawString("status: disconnect",10 ,5); 
     //   spr.pushSprite(0, 0);
+        sBleClientConnected = false;
         Serial.println("devDisconnected");
     }
 };
@@ -265,6 +270,8 @@ class MyServerCallbacks: public BLEServerCallbacks {
 static const unsigned long kBleRenameUnlockDebounceMs = 1000;
 static volatile bool sBlePlaceWritePending = false;
 static char sBlePendingPlaceValue[21] = "Anywhere";
+static String sLastPlaceCharValue = "";
+static String sLastPlaceCommandValue = "";
 
 static const unsigned long kBleUnlockPresetMs[] = {30000UL, 60000UL, 120000UL};
 
@@ -288,9 +295,15 @@ static void cycleBleUnlockWindow(bool increase) {
     appendEventLog("ble: unlock window set to " + String(bleRenameUnlockWindowMs / 1000UL) + "s");
 }
 
+// Called from main loop only — syncs the callback-safe bool from the timestamp.
+static void syncBleUnlockFlag() {
+    unsigned long unlockUntil = bleRenameUnlockUntilMs;
+    sBleRenameUnlockedFlag = (millis() < unlockUntil);
+}
+
+// Called from BLE callback task — reads only the pre-computed volatile bool.
 static bool isBleRenameWriteUnlocked() {
-    unsigned long unlockUntil = bleRenameUnlockUntilMs; // snapshot volatile once
-    return millis() < unlockUntil;
+    return sBleRenameUnlockedFlag;
 }
 
 static String sanitizePlaceValue(const std::string& rawValue) {
@@ -336,10 +349,63 @@ static void processBlePlaceUpdateIfPending() {
     if (placeCharacteristic != nullptr) {
         placeCharacteristic->setValue(value);
     }
+    if (placeCommandCharacteristic != nullptr) {
+        placeCommandCharacteristic->setValue(value);
+    }
     saveBlePlaceName(value);
     appendEventLog("ble: place updated=" + String(value));
     Serial.print("Accepted place: ");
     Serial.println(value);
+}
+
+static void processBlePlaceWriteByPolling() {
+    if (placeCharacteristic == nullptr || placeCommandCharacteristic == nullptr) {
+        return;
+    }
+
+    String placeValue = String(placeCharacteristic->getValue().c_str());
+    String commandValue = String(placeCommandCharacteristic->getValue().c_str());
+    bool placeChanged = (placeValue != sLastPlaceCharValue);
+    bool commandChanged = (commandValue != sLastPlaceCommandValue);
+
+    if (!placeChanged && !commandChanged) {
+        return;
+    }
+
+    // Track latest raw values first to avoid repeated processing loops.
+    sLastPlaceCharValue = placeValue;
+    sLastPlaceCommandValue = commandValue;
+
+    String incoming = "";
+    if (commandChanged && commandValue.length() > 0) {
+        incoming = commandValue;
+    } else if (placeChanged && placeValue.length() > 0) {
+        incoming = placeValue;
+    }
+
+    if (incoming.length() == 0) {
+        return;
+    }
+
+    if (!isBleRenameWriteUnlocked()) {
+        // Reject out-of-window writes and restore advertised values.
+        String stable = String(sBlePendingPlaceValue);
+        if (stable.length() == 0 && placeCharacteristic != nullptr) {
+            stable = String(placeCharacteristic->getValue().c_str());
+        }
+        placeCharacteristic->setValue(stable.c_str());
+        placeCommandCharacteristic->setValue("");
+        sLastPlaceCharValue = stable;
+        sLastPlaceCommandValue = "";
+        Serial.println("Rejected polled write: BLE rename lock is active");
+        return;
+    }
+
+    String safeValue = sanitizePlaceValue(std::string(incoming.c_str()));
+    queueBlePlaceUpdate(safeValue);
+    placeCommandCharacteristic->setValue("");
+    sLastPlaceCommandValue = "";
+    Serial.println("Accepted place command queued (polled)");
 }
 
 class PlaceCommandCallbacks: public BLECharacteristicCallbacks {
@@ -350,6 +416,7 @@ class PlaceCommandCallbacks: public BLECharacteristicCallbacks {
             return;
         }
         std::string placeValue = pCharacteristic->getValue();
+        Serial.println("Place command payload length: " + String(placeValue.length()));
         String safeValue = sanitizePlaceValue(placeValue);
         queueBlePlaceUpdate(safeValue);
         Serial.println("Accepted place command queued");
@@ -753,12 +820,16 @@ void setup() {
 
     globalServicePtrW = pServer->createService(SERVICEW_UUID);
     
-    // Place characteristic is now READ-ONLY to prevent external writes.
+    // Place characteristic supports writes for legacy clients, but GATT permissions
+    // are switched to read-only while locked.
     placeCharacteristic = globalServicePtrW->createCharacteristic(
         PLACE_UUID,
-        BLECharacteristic::PROPERTY_READ
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_WRITE_NR
     );
-    placeCharacteristic->setAccessPermissions(GATT_PERM_READ);
+    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
+    placeCharacteristic->setCallbacks(new PlaceCommandCallbacks());
     pDescriptor = placeCharacteristic->createDescriptor(
         DESCRIPTOR_UUID,
         ATTRIB_FLAG_ASCII_Z,
@@ -769,16 +840,24 @@ void setup() {
     {
         String savedPlace = loadBlePlaceName();
         placeCharacteristic->setValue(savedPlace.c_str());
+        sLastPlaceCharValue = savedPlace;
     }
 
-    // Place command characteristic: WRITE-ONLY, enforces unlock guard at GATT layer.
+    // Place command characteristic: READ+WRITE(+WRITE_NR) for client compatibility.
+    // Unlock guard enforced in callback — not at GATT layer.
     placeCommandCharacteristic = globalServicePtrW->createCharacteristic(
         PLACE_COMMAND_UUID,
-        BLECharacteristic::PROPERTY_WRITE
+        BLECharacteristic::PROPERTY_READ |
+        BLECharacteristic::PROPERTY_WRITE |
+        BLECharacteristic::PROPERTY_WRITE_NR
     );
-    placeCommandCharacteristic->setAccessPermissions(GATT_PERM_WRITE);
+    placeCommandCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
     placeCommandCharacteristic->setCallbacks(new PlaceCommandCallbacks());
     placeCommandCharacteristic->setValue("");
+    sLastPlaceCommandValue = "";
+
+    // Start locked in software; GATT permissions stay static for reliability on this stack.
+    sBleRenameUnlockedFlag = false;
     
     globalServicePtrW->start();
 
@@ -918,18 +997,21 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
+                syncBleUnlockFlag(); // keep callback-safe bool in sync with timestamp
         if (sdResetConfirmPending && currentMillis > sdResetConfirmUntilMs) {
             sdResetConfirmPending = false;
             if (sUiWindow == UI_WINDOW_CONFIG) {
                 renderActiveWindow();
             }
         }
+        processBlePlaceWriteByPolling();
         processBlePlaceUpdateIfPending();
         handleJoystickNavigation();
 
     if (digitalRead(WIO_KEY_C) == LOW && (currentMillis - wioKEYCMillis) > kBleRenameUnlockDebounceMs) {
         wioKEYCMillis = currentMillis;
         bleRenameUnlockUntilMs = currentMillis + bleRenameUnlockWindowMs;
+        sBleRenameUnlockedFlag = true;  // set immediately, don't wait for next sync
         appendEventLog("ble: rename unlocked via C for " + String(bleRenameUnlockWindowMs / 1000UL) + "s");
         if (sUiWindow == UI_WINDOW_CONFIG) {
             renderActiveWindow();
@@ -1035,8 +1117,9 @@ void loop() {
 
         if (WiFi.status() == WL_CONNECTED &&
             (sLastPostProcessMs == 0 || (currentMillis - sLastPostProcessMs) >= kPostProcessIntervalMs)) {
-            // Only process queued posts when user is idle to avoid input lag.
-            if (!isUserInteracting() && sUiWindow == UI_WINDOW_MAIN) {
+            // Only process queued posts when user is idle and BLE is not connected.
+            // BLE+WiFi coexistence on this platform can stall under rapid TLS retries.
+            if (!isUserInteracting() && sUiWindow == UI_WINDOW_MAIN && !sBleClientConnected) {
                 processPendingPosts(1);
                 sLastPostProcessMs = currentMillis;
             }

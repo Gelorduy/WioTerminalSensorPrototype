@@ -137,6 +137,7 @@ bool processPendingPosts(size_t maxEntries) {
     const unsigned long kQueueProcessBudgetMs = 250UL;
     const unsigned long processStartMs = millis();
     size_t sentCount = 0;
+    size_t attemptCount = 0;
     bool allConfirmed = true;
     while (inFile.available()) {
         String line = inFile.readStringUntil('\n');
@@ -146,7 +147,7 @@ bool processPendingPosts(size_t maxEntries) {
         }
 
         bool budgetExceeded = (millis() - processStartMs) >= kQueueProcessBudgetMs;
-        if (sentCount >= maxEntries || budgetExceeded) {
+        if (attemptCount >= maxEntries || budgetExceeded) {
             // Keep untouched lines as-is to avoid expensive parse/serialize work.
             outFile.println(line);
             allConfirmed = false;
@@ -166,6 +167,7 @@ bool processPendingPosts(size_t maxEntries) {
             continue;
         }
 
+        attemptCount++;
         int postRes = sendPostMessage(&doc);
         if (postRes == 200) {
             sentCount++;
