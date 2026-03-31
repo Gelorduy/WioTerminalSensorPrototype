@@ -32,6 +32,33 @@ static const unsigned long kWifiRescanIntervalMs = 15000;
 static const size_t kMaxTrustedResponseBytes = 512;
 static const char* kAckSignatureHeader = "X-Ack-Signature";
 
+static bool parseHttpsUrl(const char* url, String& host, uint16_t& port, String& path) {
+    if (url == nullptr || strncmp(url, "https://", 8) != 0) {
+        return false;
+    }
+
+    String work = String(url + 8);
+    int slashPos = work.indexOf('/');
+    String hostPort = (slashPos >= 0) ? work.substring(0, slashPos) : work;
+    path = (slashPos >= 0) ? work.substring(slashPos) : String("/");
+
+    int colonPos = hostPort.indexOf(':');
+    if (colonPos >= 0) {
+        host = hostPort.substring(0, colonPos);
+        String portStr = hostPort.substring(colonPos + 1);
+        long parsedPort = portStr.toInt();
+        if (parsedPort <= 0 || parsedPort > 65535) {
+            return false;
+        }
+        port = static_cast<uint16_t>(parsedPort);
+    } else {
+        host = hostPort;
+        port = 443;
+    }
+
+    return host.length() > 0;
+}
+
 static bool isHttpsUrl(const char* url) {
     if (url == nullptr) {
         return false;
@@ -562,80 +589,110 @@ int sendPostMessage(DynamicJsonDocument* document) {
         String message = "";
         serializeJson(*document, message);
 
-        HTTPClient http;
-        http.setReuse(false);
-        http.setConnectTimeout(2000);  // Connection timeout: 2s
-        http.setTimeout(3000);          // Overall timeout: 3s
-        const char* headerKeys[] = {kAckSignatureHeader};
-        http.collectHeaders(headerKeys, 1);
+        String host;
+        String path;
+        uint16_t port = 443;
+        if (!parseHttpsUrl(SERVERURL, host, port, path)) {
+            appendEventLog("https: invalid url");
+            return -2;
+        }
+
+        WiFiClientSecure tlsClient;
+        tlsClient.setCACert(root_ca);
+        tlsClient.setTimeout(2);
+
         Serial.println("Begin Connection...");
         appendEventLog("https: begin upload to " + String(SERVERURL));
-        int beginCode = http.begin(SERVERURL, root_ca);
-        Serial.println("Begin response:");
-        Serial.println(beginCode);
-        if (beginCode != 1) {
-            appendEventLog("https: begin failed code=" + String(beginCode));
-            http.end();
+        if (!tlsClient.connect(host.c_str(), port)) {
+            appendEventLog("https: connect failed");
+            tlsClient.stop();
             return -3;
         }
 
-        http.addHeader("Content-Type", "application/json; charset=utf-8");
-        http.addHeader("Authorization", "Bearer " + String(BEARERTOKEN));
-
+        String authHeader = "Bearer " + String(BEARERTOKEN);
         Serial.println("Sending Post message...");
-        unsigned long postStartMs = millis();
-        const unsigned long kPostTimeoutMs = 5000;  // 5-second watchdog for POST itself
-        int httpResponseCode = -1;
-        
-        // Attempt POST with watchdog timeout
-        while ((millis() - postStartMs) < kPostTimeoutMs && httpResponseCode == -1) {
-            httpResponseCode = http.POST(message);
-            if (httpResponseCode == -1) {
-                delay(50);
+        tlsClient.print("POST " + path + " HTTP/1.1\r\n");
+        tlsClient.print("Host: " + host + "\r\n");
+        tlsClient.print("Connection: close\r\n");
+        tlsClient.print("Content-Type: application/json; charset=utf-8\r\n");
+        tlsClient.print("Authorization: " + authHeader + "\r\n");
+        tlsClient.print("Content-Length: " + String(message.length()) + "\r\n\r\n");
+        tlsClient.print(message);
+
+        const unsigned long kResponseDeadlineMs = 5000UL;
+        unsigned long responseStart = millis();
+        while (!tlsClient.available() && tlsClient.connected()) {
+            if ((millis() - responseStart) >= kResponseDeadlineMs) {
+                appendEventLog("https: response timeout");
+                tlsClient.stop();
+                return -4;
             }
+            delay(10);
         }
-        
-        if (httpResponseCode == -1) {
-            Serial.println("POST timeout or error");
-            appendEventLog("https: POST timeout after " + String(millis() - postStartMs) + "ms");
-            http.end();
+
+        if (!tlsClient.available()) {
+            appendEventLog("https: no response data");
+            tlsClient.stop();
             return -4;
         }
-        
+
+        String statusLine = tlsClient.readStringUntil('\n');
+        statusLine.trim();
+        int firstSpace = statusLine.indexOf(' ');
+        int secondSpace = statusLine.indexOf(' ', firstSpace + 1);
+        int httpResponseCode = -1;
+        if (firstSpace > 0 && secondSpace > firstSpace) {
+            httpResponseCode = statusLine.substring(firstSpace + 1, secondSpace).toInt();
+        }
+
+        String receivedSignature = "";
+        while (tlsClient.connected()) {
+            String line = tlsClient.readStringUntil('\n');
+            line.trim();
+            if (line.length() == 0) {
+                break;
+            }
+
+            String lowerLine = line;
+            lowerLine.toLowerCase();
+            if (lowerLine.startsWith("x-ack-signature:")) {
+                int sep = line.indexOf(':');
+                if (sep >= 0) {
+                    receivedSignature = line.substring(sep + 1);
+                    receivedSignature.trim();
+                    receivedSignature = toLowerHex(receivedSignature);
+                }
+            }
+        }
+
         Serial.println("Post Message Sent and received response...");
         Serial.println("Response Code: " + String(httpResponseCode));
         if (httpResponseCode == 200) {
             if (sAckValidationEnabled) {
                 if (!isAckValidationConfigured()) {
                     appendEventLog("security: ack validation enabled but key missing");
-                    http.end();
+                    tlsClient.stop();
                     return -7;
                 }
 
-                String receivedSignature = toLowerHex(http.header(kAckSignatureHeader));
                 if (receivedSignature.length() == 0) {
                     appendEventLog("security: missing ack signature header");
-                    http.end();
+                    tlsClient.stop();
                     return -8;
                 }
 
                 String expectedSignature = hmacSha256Hex(message, ACK_HMAC_KEY);
                 if (expectedSignature.length() == 0) {
                     appendEventLog("security: failed to compute ack signature");
-                    http.end();
+                    tlsClient.stop();
                     return -9;
                 }
 
                 if (!constantTimeEquals(receivedSignature, expectedSignature)) {
                     appendEventLog("security: invalid ack signature");
-                    http.end();
+                    tlsClient.stop();
                     return -10;
                 }
-            }
-
-            int responseLength = http.getSize();
-            if (responseLength > static_cast<int>(kMaxTrustedResponseBytes)) {
-                appendEventLog("https: large response ignored len=" + String(responseLength));
             }
             // Do not parse or execute response body; this endpoint is treated as acknowledgement-only.
             appendEventLog("https: upload success code=" + String(httpResponseCode));
@@ -643,10 +700,16 @@ int sendPostMessage(DynamicJsonDocument* document) {
             Serial.print("Error on sending Information to Server: ");
             Serial.println(httpResponseCode);
             appendEventLog("https: upload failed code=" + String(httpResponseCode));
-            http.end();
+            tlsClient.stop();
             return httpResponseCode;
         }
-        http.end();
+
+        size_t drained = 0;
+        while (tlsClient.available() && drained < kMaxTrustedResponseBytes) {
+            tlsClient.read();
+            drained++;
+        }
+        tlsClient.stop();
         return 200;
     } else {
         Serial.println("Error in WiFi connection");

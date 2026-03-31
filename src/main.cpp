@@ -990,8 +990,16 @@ void loop() {
         uint8_t* descValue = pDescriptor->getValue();
         if (descValue != nullptr) {
             Serial.print("Current Descriptor Value: ");
-            for (int i = 0; i < 21; i++) { // Replace 2 with the actual length of your descriptor
-                Serial.print((char)descValue[i]); // Convert and print each byte as a character
+            for (int i = 0; i < 20; i++) {
+                char c = static_cast<char>(descValue[i]);
+                if (c == '\0') {
+                    break;
+                }
+                if (c < 32 || c > 126) {
+                    Serial.print('?');
+                } else {
+                    Serial.print(c);
+                }
             }
             Serial.println();
         }

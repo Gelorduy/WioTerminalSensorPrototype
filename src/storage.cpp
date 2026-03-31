@@ -205,34 +205,13 @@ bool processPendingPosts(size_t maxEntries) {
 }
 
 void appendEventLog(const String& message) {
-    static unsigned long sLastSDFailMs = 0;
-
-    if (!sdcard || message.length() == 0) {
+    if (message.length() == 0) {
         return;
     }
 
-    // Skip writes if SD had recent failures (30s timeout)
-    if (sLastSDFailMs > 0 && millis() - sLastSDFailMs < 30000UL) {
-        Serial.println("SD: write skipped (timeout protection)");
-        return;
-    }
-
-    String logName = getEventsLogName();
-    rotateLogIfNeeded(logName);
-
-    File eventFile = SD.open(logName, FILE_APPEND);
-    if (!eventFile) {
-        eventFile = SD.open(logName, FILE_WRITE);
-    }
-
-    if (!eventFile) {
-        Serial.println("SD: append failed, disabling temporarily");
-        sLastSDFailMs = millis();
-        return;
-    }
-
-    eventFile.println(message);
-    eventFile.close();
+    // Keep event logs on serial only. SD.open can block indefinitely on flaky cards
+    // and freeze the main loop in hot paths (including HTTPS upload).
+    Serial.println("EVT: " + message);
 }
 
 void saveBlePlaceName(const String& name) {
