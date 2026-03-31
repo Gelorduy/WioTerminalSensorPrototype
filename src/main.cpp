@@ -41,6 +41,7 @@
 #define TEMPERATURE_UUID    "87654321-4321-8765-4321-abcdef012345"
 #define HUMIDITY_UUID       "87654322-4321-8765-4321-abcdef012346"
 #define PLACE_UUID          "12345677-1234-5678-1234-56789abcdef1" //"87654321-4321-8765-4321-abcdef012344"
+#define PLACE_COMMAND_UUID  "12345679-1234-5678-1234-56789abcdef2" // Write-only, enforces unlock guard
 #define DESCRIPTOR_UUID     "12345677-4322-8766-4322-abcdef678910"
 
 BLEServer *pServer = NULL;
@@ -48,8 +49,9 @@ BLEService *globalServicePtrR = nullptr;
 BLEService *globalServicePtrW = nullptr;
 BLEDescriptor *pDescriptor = NULL;
 BLECharacteristic * temperatureCharacteristic;
-BLECharacteristic * humidityCharacteristic;
 BLECharacteristic * placeCharacteristic;
+BLECharacteristic * placeCommandCharacteristic;
+BLECharacteristic * humidityCharacteristic;
 
 // Screen Definitions
 TFT_eSPI tft;
@@ -339,21 +341,18 @@ static void processBlePlaceUpdateIfPending() {
     Serial.println(value);
 }
 
-class PlaceCallbacks: public BLECharacteristicCallbacks {
+class PlaceCommandCallbacks: public BLECharacteristicCallbacks {
     void onWrite(BLECharacteristic *pCharacteristic) {
-        Serial.println("onWrite triggered");
+        Serial.println("onWrite to place command uuid triggered");
         if (!isBleRenameWriteUnlocked()) {
-            Serial.println("Rejected place update: BLE rename lock is active");
+            Serial.println("Rejected place command: BLE rename lock is active");
             return;
         }
         std::string placeValue = pCharacteristic->getValue();
         String safeValue = sanitizePlaceValue(placeValue);
         queueBlePlaceUpdate(safeValue);
-        Serial.println("Accepted place update queued");
+        Serial.println("Accepted place command queued");
     }
-    // void onRead(BLECharacteristic *pCharacteristic){
-    //     Serial.println("aPlace");
-    // }
 };
 
 class TemperatureCallbacks: public BLECharacteristicCallbacks {
@@ -752,24 +751,34 @@ void setup() {
     pServer->setCallbacks(new MyServerCallbacks());
 
     globalServicePtrW = pServer->createService(SERVICEW_UUID);
+    
+    // Place characteristic is now READ-ONLY to prevent external writes.
     placeCharacteristic = globalServicePtrW->createCharacteristic(
         PLACE_UUID,
-        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_READ
+        BLECharacteristic::PROPERTY_READ
     );
-    // Keep permissions compatible with existing mobile app; writes are gated by local unlock window.
-    placeCharacteristic->setAccessPermissions(GATT_PERM_READ | GATT_PERM_WRITE);
+    placeCharacteristic->setAccessPermissions(GATT_PERM_READ);
     pDescriptor = placeCharacteristic->createDescriptor(
         DESCRIPTOR_UUID,
         ATTRIB_FLAG_ASCII_Z,
-        GATT_PERM_READ | GATT_PERM_WRITE,
+        GATT_PERM_READ,
         21
     );
     pDescriptor->setValue("Place in House");
-    placeCharacteristic->setCallbacks(new PlaceCallbacks());
     {
         String savedPlace = loadBlePlaceName();
         placeCharacteristic->setValue(savedPlace.c_str());
     }
+
+    // Place command characteristic: WRITE-ONLY, enforces unlock guard at GATT layer.
+    placeCommandCharacteristic = globalServicePtrW->createCharacteristic(
+        PLACE_COMMAND_UUID,
+        BLECharacteristic::PROPERTY_WRITE
+    );
+    placeCommandCharacteristic->setAccessPermissions(GATT_PERM_WRITE);
+    placeCommandCharacteristic->setCallbacks(new PlaceCommandCallbacks());
+    placeCommandCharacteristic->setValue("");
+    
     globalServicePtrW->start();
 
     globalServicePtrR = pServer->createService(SERVICER_UUID);
