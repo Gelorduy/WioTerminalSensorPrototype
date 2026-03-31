@@ -205,7 +205,15 @@ bool processPendingPosts(size_t maxEntries) {
 }
 
 void appendEventLog(const String& message) {
+    static unsigned long sLastSDFailMs = 0;
+
     if (!sdcard || message.length() == 0) {
+        return;
+    }
+
+    // Skip writes if SD had recent failures (30s timeout)
+    if (sLastSDFailMs > 0 && millis() - sLastSDFailMs < 30000UL) {
+        Serial.println("SD: write skipped (timeout protection)");
         return;
     }
 
@@ -218,7 +226,8 @@ void appendEventLog(const String& message) {
     }
 
     if (!eventFile) {
-        Serial.println("error opening events log " + logName);
+        Serial.println("SD: append failed, disabling temporarily");
+        sLastSDFailMs = millis();
         return;
     }
 
