@@ -225,3 +225,53 @@ void appendEventLog(const String& message) {
     eventFile.println(message);
     eventFile.close();
 }
+
+void saveBlePlaceName(const String& name) {
+    if (!sdcard) {
+        return;
+    }
+
+    String fileName = "ble_place_" + String(serialNumber) + ".txt";
+    File file = SD.open(fileName, FILE_WRITE);
+    if (!file) {
+        Serial.println("Error opening " + fileName + " for write");
+        return;
+    }
+
+    file.println(name);
+    file.close();
+    Serial.println("Saved BLE place name: " + name);
+}
+
+String loadBlePlaceName() {
+    if (!sdcard) {
+        return "Anywhere";
+    }
+
+    String fileName = "ble_place_" + String(serialNumber) + ".txt";
+    if (!SD.exists(fileName)) {
+        return "Anywhere";
+    }
+
+    File file = SD.open(fileName, FILE_READ);
+    if (!file) {
+        return "Anywhere";
+    }
+
+    String name = "";
+    while (file.available()) {
+        char c = file.read();
+        if (c == '\n' || c == '\r') {
+            break;
+        }
+        name += c;
+    }
+    file.close();
+
+    if (name.length() == 0) {
+        return "Anywhere";
+    }
+
+    Serial.println("Loaded BLE place name: " + name);
+    return name;
+}

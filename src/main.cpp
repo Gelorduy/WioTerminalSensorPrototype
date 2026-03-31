@@ -329,6 +329,7 @@ static void processBlePlaceUpdateIfPending() {
     if (placeCharacteristic != nullptr) {
         placeCharacteristic->setValue(value);
     }
+    saveBlePlaceName(value);
     appendEventLog("ble: place updated=" + String(value));
     Serial.print("Accepted place: ");
     Serial.println(value);
@@ -742,7 +743,10 @@ void setup() {
     );
     pDescriptor->setValue("Place in House");
     placeCharacteristic->setCallbacks(new PlaceCallbacks());
-    placeCharacteristic->setValue("Anywhere");
+    {
+        String savedPlace = loadBlePlaceName();
+        placeCharacteristic->setValue(savedPlace.c_str());
+    }
     globalServicePtrW->start();
 
     globalServicePtrR = pServer->createService(SERVICER_UUID);

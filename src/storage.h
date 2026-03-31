@@ -8,5 +8,7 @@ bool resendUnsentLogs(size_t maxEntries = 10);
 bool enqueuePostForRetry(DynamicJsonDocument* jsonDoc);
 bool processPendingPosts(size_t maxEntries = 1);
 void appendEventLog(const String& message);
+void saveBlePlaceName(const String& name);
+String loadBlePlaceName();
 
 #endif
