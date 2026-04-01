@@ -67,4 +67,7 @@ extern unsigned long bleRenameUnlockWindowMs;
 
 extern const char* root_ca;
 
+// OTA state shared with display
+extern bool otaBannerVisible;
+
 #endif

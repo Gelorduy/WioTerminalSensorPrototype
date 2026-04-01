@@ -7,6 +7,7 @@
 #include "app_state.h"
 #include "network.h"
 #include "storage.h"
+#include "ota.h"
 
 #define TFT_PROCOMSABLUE 0x2A51
 
@@ -42,6 +43,44 @@ static void drawBleUnlockBadge() {
     spr.setTextColor(TFT_BLACK, TFT_GREEN);
     spr.setTextFont(1);
     spr.drawString("BLEU", badgeX + 6, badgeY + 4);
+}
+
+// Draws OTA notification banner at the bottom of the sprite.
+// Shown when an update is READY to apply or is actively downloading/staging.
+static void drawOtaBadge() {
+    OtaState ots = otaGetState();
+    if (ots == OtaState::IDLE     || ots == OtaState::UP_TO_DATE ||
+        ots == OtaState::FAILED   || ots == OtaState::CHECKING) return;
+
+    const int bW = 120;
+    const int bH = 16;
+    const int bX = 4;
+    const int bY = 240 - bH - 4;
+
+    uint16_t col = TFT_ORANGE;
+    String label = "";
+
+    switch (ots) {
+        case OtaState::DOWNLOADING:
+            col   = TFT_CYAN;
+            label = "OTA " + String(otaGetDownloadPercent()) + "%";
+            break;
+        case OtaState::STAGING:
+            col   = TFT_CYAN;
+            label = "OTA stage...";
+            break;
+        case OtaState::READY:
+        case OtaState::APPLYING:
+            col   = TFT_ORANGE;
+            label = "OTA READY " + otaGetAvailableVersion();
+            break;
+        default:
+            return;
+    }
+    spr.fillRoundRect(bX, bY, bW, bH, 4, col);
+    spr.setTextColor(TFT_BLACK, col);
+    spr.setTextFont(1);
+    spr.drawString(label, bX + 4, bY + 4);
 }
 
 static String fitHeaderText(const String& text, size_t maxLen) {
@@ -321,6 +360,7 @@ void sendConfigScreen() {
     spr.drawString("UP/DOWN: BLE window 30/60/120s", 8, 218);
     spr.drawString("LEFT: Menu", 8, 228);
     drawBleUnlockBadge();
+    drawOtaBadge();
     spr.pushSprite(0, 0);
 }
 
@@ -372,6 +412,7 @@ void sendToScreen() {
     spr.drawString(fitHeaderText(wifiIp, 20), 28, 232);
 
     drawBleUnlockBadge();
+    drawOtaBadge();
 
     spr.pushSprite(0, 0);
 

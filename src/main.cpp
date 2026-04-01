@@ -28,6 +28,7 @@
 #include <rpcWiFiClientSecure.h>
 #include "network.h"
 #include "display.h"
+#include "ota.h"
 #include "sensors.h"
 #include "storage.h"
 #include <ctype.h>
@@ -160,6 +161,7 @@ volatile unsigned long bleRenameUnlockUntilMs = 0;
 unsigned long bleRenameUnlockWindowMs = 120000;
 // Simple bool flag read by BLE callback — avoids calling millis() in BLE task context.
 volatile bool sBleRenameUnlockedFlag = false;
+bool otaBannerVisible = false;
 
 
 // RootCA Certificate
@@ -564,6 +566,20 @@ static void handleJoystickNavigation() {
         return;
     }
 
+    // Main screen UP: apply a ready update or kick a manual version check
+    if (sUiWindow == UI_WINDOW_MAIN && isJoystickPressed(WIO_5S_UP)) {
+        OtaState ots = otaGetState();
+        if (ots == OtaState::READY) {
+            otaRequestApply();
+        } else if (ots == OtaState::IDLE || ots == OtaState::UP_TO_DATE ||
+                   ots == OtaState::FAILED) {
+            otaCheckForUpdate();
+        }
+        renderActiveWindow();
+        sJoystickLocked = true;
+        return;
+    }
+
     if (sUiWindow == UI_WINDOW_MENU && isJoystickPressed(WIO_5S_DOWN)) {
         sMenuSelection = (sMenuSelection + 1) % 3;
         renderActiveWindow();
@@ -720,6 +736,8 @@ static void startupWiFiStatusSink(const String& message) {
 
 
 void setup() {
+    otaInit(); // MUST be first: applies staged OTA firmware if pending, then returns normally
+
     Serial.begin(9600);
 
     tft.begin();
@@ -997,7 +1015,13 @@ void setup() {
 void loop() {
   // put your main code here, to run repeatedly:
     currentMillis = millis();
-                syncBleUnlockFlag(); // keep callback-safe bool in sync with timestamp
+        syncBleUnlockFlag(); // keep callback-safe bool in sync with timestamp
+
+        // OTA: drive state machine; auto-check every hour when WiFi is up
+        if (WiFi.status() == WL_CONNECTED) {
+                otaProcessStateMachine();
+        }
+
         if (sdResetConfirmPending && currentMillis > sdResetConfirmUntilMs) {
             sdResetConfirmPending = false;
             if (sUiWindow == UI_WINDOW_CONFIG) {
