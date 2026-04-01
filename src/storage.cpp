@@ -6,6 +6,9 @@
 #include "network.h"
 
 static const size_t kMaxLogSizeBytes = 128 * 1024;
+static const unsigned long kQueueRetryCooldownMs = 15000UL;
+static unsigned long sQueueRetryBlockedUntilMs = 0;
+static unsigned long sQueueRetryLastNoticeMs = 0;
 
 static String getUnsentLogName() {
     return "unsent" + String(serialNumber) + ".log";
@@ -113,9 +116,72 @@ bool processPendingPosts(size_t maxEntries) {
         return false;
     }
 
+    if (maxEntries == 0) {
+        return false;
+    }
+
+    unsigned long nowMs = millis();
+    if (sQueueRetryBlockedUntilMs != 0 && (long)(sQueueRetryBlockedUntilMs - nowMs) > 0) {
+        if (sQueueRetryLastNoticeMs == 0 || (nowMs - sQueueRetryLastNoticeMs) >= 2000UL) {
+            appendEventLog("queue: retry cooldown active");
+            sQueueRetryLastNoticeMs = nowMs;
+        }
+        return false;
+    }
+    sQueueRetryLastNoticeMs = 0;
+
     String unsentName = getUnsentLogName();
     if (!SD.exists(unsentName)) {
         unsentlogCreated = false;
+        return true;
+    }
+
+    // Preflight: confirm at least one payload can be posted successfully.
+    // If server is down, exit early and avoid reprocessing/rewriting the whole queue.
+    String preflightRawLine = "";
+    String preflightConfirmedLine = "";
+    bool hasSendablePayload = false;
+    {
+        File preflightFile = SD.open(unsentName, FILE_READ);
+        if (!preflightFile) {
+            Serial.println("Failed to open pending queue for preflight.");
+            return false;
+        }
+
+        while (preflightFile.available()) {
+            String line = preflightFile.readStringUntil('\n');
+            line.trim();
+            if (line.length() == 0 || line == "{" || line == "},") {
+                continue;
+            }
+
+            DynamicJsonDocument preflightDoc(4096);
+            auto preflightErr = deserializeJson(preflightDoc, line);
+            if (preflightErr) {
+                continue;
+            }
+
+            hasSendablePayload = true;
+            int preflightRes = sendPostMessage(&preflightDoc);
+            if (preflightRes != 200) {
+                appendEventLog("queue: preflight failed, post code=" + String(preflightRes));
+                sQueueRetryBlockedUntilMs = millis() + kQueueRetryCooldownMs;
+                preflightFile.close();
+                return false;
+            }
+
+            preflightRawLine = line;
+            serializeJson(preflightDoc, preflightConfirmedLine);
+            appendEventLog("queue: preflight confirmed payload");
+            break;
+        }
+        preflightFile.close();
+    }
+
+    if (!hasSendablePayload) {
+        SD.remove(unsentName);
+        unsentlogCreated = false;
+        appendEventLog("queue: drained");
         return true;
     }
 
@@ -136,13 +202,20 @@ bool processPendingPosts(size_t maxEntries) {
 
     const unsigned long kQueueProcessBudgetMs = 250UL;
     const unsigned long processStartMs = millis();
-    size_t sentCount = 0;
-    size_t attemptCount = 0;
+    size_t sentCount = 1;
+    size_t attemptCount = 1;
     bool allConfirmed = true;
+    bool preflightLineRemoved = false;
     while (inFile.available()) {
         String line = inFile.readStringUntil('\n');
         line.trim();
         if (line.length() == 0 || line == "{" || line == "},") {
+            continue;
+        }
+
+        if (!preflightLineRemoved && (line == preflightRawLine || line == preflightConfirmedLine)) {
+            // Drop the payload already confirmed by preflight to avoid duplicate posts.
+            preflightLineRemoved = true;
             continue;
         }
 
@@ -176,6 +249,7 @@ bool processPendingPosts(size_t maxEntries) {
             continue;
         }
         appendEventLog("queue: keep pending, post code=" + String(postRes));
+        sQueueRetryBlockedUntilMs = millis() + kQueueRetryCooldownMs;
 
         String keepLine = "";
         serializeJson(doc, keepLine);
@@ -203,6 +277,9 @@ bool processPendingPosts(size_t maxEntries) {
 
     SD.rename(tempName, unsentName);
     unsentlogCreated = true;
+    if (allConfirmed) {
+        sQueueRetryBlockedUntilMs = 0;
+    }
     return false;
 }
 

@@ -91,6 +91,7 @@ unsigned long screenMillis = 0;
 unsigned long lastRefreshMillis = 0;
 unsigned long wioKEYBMillis = 0;
 unsigned long wioKEYCMillis = 0;
+unsigned long sLastKeyADebugMs = 0;
 static volatile bool sBleClientConnected = false;
 
 const unsigned long interval = 60000; // interval between scans 60 seconds
@@ -1052,7 +1053,10 @@ void loop() {
     if (digitalRead(WIO_KEY_A) == LOW) {
         screenMillis = currentMillis;
         bscreenOn = false;
-        Serial.println("screenmillis:" + String(screenMillis));
+        if (sLastKeyADebugMs == 0 || (currentMillis - sLastKeyADebugMs) >= 2000UL) {
+            Serial.println("screenmillis:" + String(screenMillis));
+            sLastKeyADebugMs = currentMillis;
+        }
     } else if (digitalRead(WIO_KEY_B) == LOW && (currentMillis - wioKEYBMillis > 4000)) {
         wioKEYBMillis = currentMillis;
         bscreenOn = !bscreenOn;
@@ -1148,6 +1152,10 @@ void loop() {
                 sLastPostProcessMs = currentMillis;
             }
         }
+
+        // Cooperative idle slice: avoids busy-spin, improves BLE/WiFi task scheduling,
+        // and reduces battery drain when running for long periods.
+        delay(5);
 
 
   // Write File
