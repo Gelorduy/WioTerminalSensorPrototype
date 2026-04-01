@@ -1,4 +1,4 @@
-# ProcomsaWioMonitor - Architecture and Dependencies
+# GGGWioMonitor - Architecture and Dependencies
 
 ## 1. Project Snapshot
 - Project type: PlatformIO + Arduino framework + C++

@@ -1,4 +1,4 @@
-# Procomsa Wio Monitor - User Manual
+# GGG Wio Monitor - User Manual
 
 ## 1. Purpose
 

@@ -1,4 +1,4 @@
-# ProcomsaWioMonitor Refactor Roadmap
+# GGGWioMonitor Refactor Roadmap
 
 ## Goal
 Improve maintainability and reliability of the WIO Terminal firmware with low-risk, phased changes that keep current behavior stable.

@@ -1,4 +1,4 @@
-# Procomsa Wio Monitor
+# GGG Wio Monitor
 
 Firmware for a Seeed Wio Terminal environmental monitor with:
 
